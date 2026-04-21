@@ -1,0 +1,3 @@
+# Exceptions
+
+::: pyhulax.core.exceptions

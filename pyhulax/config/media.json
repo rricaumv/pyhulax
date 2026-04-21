@@ -1,0 +1,6 @@
+{
+  "base_dir": "media",
+  "photo_dir": "photos",
+  "video_dir": "videos",
+  "log_dir": "logs"
+}

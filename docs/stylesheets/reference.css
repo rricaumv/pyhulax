@@ -1,0 +1,106 @@
+.doc-signature .o,
+.doc-signature .ow,
+.doc-signature .p {
+  color: var(--md-code-hl-special-color);
+}
+
+.doc-signature .kc,
+.doc-signature .kc > span,
+.doc-signature .sa,
+.doc-signature .s,
+.doc-signature .s1,
+.doc-signature .s2 {
+  color: var(--md-code-hl-constant-color);
+}
+
+.doc-signature .n > a,
+.doc-signature .nc > a,
+.doc-signature .nn > a {
+  color: var(--md-code-hl-name-color);
+  font-weight: 500;
+  text-decoration-color: color-mix(
+    in srgb,
+    var(--md-code-hl-name-color) 45%,
+    transparent
+  );
+}
+
+.doc-signature .n > a:hover,
+.doc-signature .nc > a:hover,
+.doc-signature .nn > a:hover {
+  color: var(--md-accent-fg-color);
+}
+
+.doc-contents pre > code {
+  font-variant-ligatures: none;
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object {
+  margin-block: 1.4rem;
+  border: 1px solid var(--pyhulax-border);
+  border-radius: 1rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--pyhulax-surface-0) 88%, transparent),
+      color-mix(in srgb, var(--pyhulax-surface-1) 92%, transparent)
+    );
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--pyhulax-shadow) 70%, transparent);
+  overflow: hidden;
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object > .doc-heading {
+  margin: 0;
+  padding: 1rem 1.15rem 0.85rem;
+  border-bottom: 1px solid var(--pyhulax-border);
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--pyhulax-surface-2) 86%, transparent),
+      color-mix(in srgb, var(--pyhulax-surface-1) 76%, transparent)
+    );
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object > .doc-contents {
+  margin: 0;
+  padding: 1rem 1.15rem 1.15rem;
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object.doc-class > .doc-heading {
+  box-shadow: inset 0.28rem 0 0 var(--pyhulax-class-accent);
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object.doc-function > .doc-heading {
+  box-shadow: inset 0.28rem 0 0 var(--pyhulax-method-accent);
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object.doc-attribute > .doc-heading {
+  box-shadow: inset 0.28rem 0 0 var(--pyhulax-attr-accent);
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object .doc-children {
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--pyhulax-border-strong);
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object .doc-signature {
+  margin-top: 0.85rem;
+  border: 1px solid var(--pyhulax-border);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--md-code-bg-color) 92%, transparent);
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object .doc-signature pre {
+  margin: 0;
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object .doc-labels {
+  gap: 0.35rem;
+}
+
+[data-md-color-scheme^="rosepine-"] .doc.doc-object .doc-label {
+  border: 1px solid var(--pyhulax-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pyhulax-surface-2) 72%, transparent);
+}

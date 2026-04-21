@@ -1,0 +1,10 @@
+{
+  "cell_size_cm": 60.0,
+  "cell_offset_cm": 15.0,
+  "qr_size_cm": 20.0,
+  "qr_spacing_cm": 30.0,
+  "padding_cm": 10.0,
+  "safety_margin_cm": 5.0,
+  "waypoint_tolerance_cm": 3.0,
+  "wall_thickness_cm": 1.0
+}

@@ -1,0 +1,7 @@
+{
+  "default_takeoff_height_cm": 80,
+  "default_flight_height_cm": 100,
+  "default_speed_cms": 100,
+  "position_tolerance_cm": 5.0,
+  "yaw_tolerance_deg": 3.0
+}

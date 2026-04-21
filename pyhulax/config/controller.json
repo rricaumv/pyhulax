@@ -1,0 +1,12 @@
+{
+  "kp_xy": 2.0,
+  "kd_xy": 0.5,
+  "kp_z": 3.0,
+  "kd_z": 0.8,
+  "kp_yaw": 5.0,
+  "kd_yaw": 1.0,
+  "max_horizontal_output": 800,
+  "max_vertical_output": 600,
+  "max_yaw_output": 500,
+  "control_rate_hz": 20.0
+}

@@ -1,0 +1,8 @@
+{
+  "timeout_sec": 30.0,
+  "buffer_size": 10,
+  "jpeg_quality": 80,
+  "max_fps": 30.0,
+  "detection_confidence": 0.5,
+  "nms_iou_threshold": 0.45
+}

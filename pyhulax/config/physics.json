@@ -1,0 +1,6 @@
+{
+  "drone_width_cm": 18.93,
+  "drone_depth_cm": 18.46,
+  "min_altitude_cm": 30.0,
+  "max_altitude_cm": 200.0
+}

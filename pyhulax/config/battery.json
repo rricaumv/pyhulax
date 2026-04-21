@@ -1,0 +1,5 @@
+{
+  "warning_threshold": 15,
+  "critical_threshold": 10,
+  "min_operational_threshold": 20
+}

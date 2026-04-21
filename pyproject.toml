@@ -1,0 +1,107 @@
+[project]
+name = "pyhulax"
+version = "0.1.3"
+description = "Python API for controlling HG-Fly F09-lite drones via MAVLink"
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["drone", "hula", "hg-fly", "mavlink", "robotics", "sdk"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    # Core
+    "pymavlink",
+    "numpy>=2.0",
+    "psutil",
+    "pyserial",
+    # Typed API
+    "pydantic>=2.0",
+    # Networking
+    "requests",
+]
+
+[project.urls]
+Documentation = "https://pyhulax.xenops.ae"
+Homepage = "https://github.com/XENOPSAE/pyhulax"
+Issues = "https://github.com/XENOPSAE/pyhulax/issues"
+Repository = "https://github.com/XENOPSAE/pyhulax"
+
+[project.optional-dependencies]
+db = [
+    "asyncpg>=0.29.0",
+]
+video = [
+    "opencv-python",
+    "av==15.1.0",
+]
+vision = [
+    "opencv-python",
+    "onnxruntime",
+]
+web = [
+    "flask",
+]
+all = [
+    "asyncpg>=0.29.0",
+    "opencv-python",
+    "av==15.1.0",
+    "onnxruntime",
+    "flask",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyhulax"]
+include = [
+    "pyhulax/config/*.json",
+]
+exclude = [
+    "pyhulax/maze/**",
+    "pyhulax/system/dancecontroller.py",
+    "pyhulax/system/dancefileanalyzer.py",
+]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "pyhulax",
+    "README.md",
+    "pyproject.toml",
+    "requirements.txt",
+    "mkdocs.yml",
+    "docs",
+]
+include = [
+    "pyhulax/config/*.json",
+]
+exclude = [
+    "pyhulax/maze/**",
+    "pyhulax/system/dancecontroller.py",
+    "pyhulax/system/dancefileanalyzer.py",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest",
+    "ruff>=0.9.0",
+    "ipython",
+    "jupyter",
+    "mkdocs>=1.6.0",
+    "mkdocstrings[python]>=0.26.0",
+    "mkdocs-material>=9.5.0",
+    "griffe-pydantic>=1.1.0",
+]
