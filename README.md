@@ -68,8 +68,7 @@ The SDK’s default settings are loaded from packaged files in
 `pyhulax/config/*.json`. Passing `DroneConfig(...)` only overrides the keys
 you explicitly set.
 
-Full SDK docs live in [docs/sdk/README.md](docs/sdk/README.md).
-Auto-generated API reference is configured with MkDocs + mkdocstrings in [mkdocs.yml](mkdocs.yml).
+Full SDK docs live in https://pyhulax.xenops.ae
 
 ## Optional Features
 
