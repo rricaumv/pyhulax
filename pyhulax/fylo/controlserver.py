@@ -131,7 +131,8 @@ class Controlserver:
             self._connect_status = 0
             # Give threads time to exit cleanly
             import time
-            time.sleep(0.5)
+            (time.
+             sleep(0.5))
 
     def __del__(self):
         """Cleanup when object is garbage collected"""

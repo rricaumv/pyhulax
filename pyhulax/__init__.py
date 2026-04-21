@@ -100,10 +100,10 @@ from pyhulax.config import (
 )
 from pyhulax.fylo.controlserver import Controlserver
 from pyhulax.control import ManualFlightController, ControllerConfig as FlightControllerConfig
+from pyhulax.logging.command_logger import CommandLogger
 
 if TYPE_CHECKING:
     from pyhulax.logging.base import FlightLogger
-    from pyhulax.logging.command_logger import CommandLogger
     from pyhulax.video.stream import VideoStream
 
 if getattr(logging, "__name__", "") != "logging":
@@ -173,7 +173,6 @@ class DroneAPI:
         # Command logging
         self._command_logger: CommandLogger | None = None
         if enable_command_logging:
-            from pyhulax.logging.command_logger import CommandLogger
             self._command_logger = CommandLogger(
                 log_dir=command_log_dir,
                 prefix="commands",
@@ -736,7 +735,7 @@ class DroneAPI:
         """
         self._check_ready(check_flying=False)
         result = self._server.plane_fly_arm()
-        # return self._parse_result(result)
+        return self._parse_result(result)
 
     def disarm(self) -> CommandResult:
         """
@@ -2203,14 +2202,15 @@ class DroneAPI:
         if web_server:
             try:
                 from pyhulax.video import WebStreamServer
+            except ImportError:
+                logger.warning("Flask not installed. Web streaming unavailable.")
+            else:
                 server = WebStreamServer(
                     stream,
                     port=web_port or self._config.network.web_port,
                 )
                 server.start()
                 logger.info(f"Web video stream at {server.url}")
-            except ImportError:
-                logger.warning("Flask not installed. Web streaming unavailable.")
 
         # Start stream
         stream.start()
@@ -2422,17 +2422,18 @@ class DroneAPI:
         ```
         """
         if isinstance(photo, str):
-            # Find photo by name
             photos = self.list_photos()
             matching = [p for p in photos if p.name == photo]
             if not matching:
                 if self._log:
                     self._log.error(f"Photo not found: {photo}")
                 return None
-            photo = matching[0]
+            media_file: MediaFile = matching[0]
+        else:
+            media_file = photo
 
         save_path = Path(save_dir) if save_dir else None
-        return self._download_media(photo, save_path)
+        return self._download_media(media_file, save_path)
 
     def download_video(
         self,
@@ -2456,10 +2457,12 @@ class DroneAPI:
                 if self._log:
                     self._log.error(f"Video not found: {video}")
                 return None
-            video = matching[0]
+            media_file: MediaFile =  matching[0]
+        else:
+            media_file = video
 
         save_path = Path(save_dir) if save_dir else None
-        return self._download_media(video, save_path)
+        return self._download_media(media_file, save_path)
 
     def download_log(
         self,
@@ -2483,10 +2486,12 @@ class DroneAPI:
                 if self._log:
                     self._log.error(f"Log not found: {log}")
                 return None
-            log = matching[0]
+            media_file: MediaFile = matching[0]
+        else:
+            media_file = log
 
         save_path = Path(save_dir) if save_dir else None
-        return self._download_media(log, save_path)
+        return self._download_media(media_file, save_path)
 
     def download_all_photos(self, save_dir: Path | str | None = None) -> list[Path]:
         """
@@ -2587,7 +2592,7 @@ class DroneAPI:
         ```
         """
         if isinstance(photo, str):
-            photo = MediaFile(
+            photo: MediaFile = MediaFile(
                 name=photo,
                 path=f"/sdcard/picture/{photo}",
                 date="",
@@ -2607,7 +2612,7 @@ class DroneAPI:
             True if deletion successful
         """
         if isinstance(video, str):
-            video = MediaFile(
+            video: MediaFile = MediaFile(
                 name=video,
                 path=f"/sdcard/video/{video}",
                 date="",
