@@ -67,12 +67,19 @@ def get_wifi_ip():
 
 
 class Controlserver:
-    def __init__(self, runtime_config: DroneConfig | None = None):
+    def __init__(
+        self,
+        runtime_config: DroneConfig | None = None,
+        drone_id: int | None = None,
+    ):
         self._config = resolve_config(runtime_config)
         self._server_ip = self._config.network.drone_ip
         self._connect_status = 0
         self._datacenter: DataCenter = DataCenter()
         self._taskcontroller: TaskController | None = None
+        # Optional explicit per-connection drone id. When omitted the id is
+        # discovered from this connection's own telemetry after connect().
+        self._drone_id = drone_id
 
         fylo_config.apply_runtime_config(self._config)
 
@@ -97,6 +104,45 @@ class Controlserver:
             pass
         return None
 
+    # =============================================Drone Identity======================================================================#
+
+    def _resolve_drone_id(self) -> int | None:
+        """Resolve this connection's drone id.
+
+        Priority: explicit id passed to this Controlserver > id discovered by
+        the TaskController from this connection's telemetry > legacy global.
+        """
+        if self._drone_id is not None:
+            return self._drone_id
+        if self._taskcontroller is not None:
+            discovered = self._taskcontroller.get_drone_id()
+            if discovered is not None:
+                return discovered
+        return fylo_config.drone_id
+
+    def _resolve_command_id(self) -> int:
+        """Drone id to stamp into outgoing command payloads (never None)."""
+        resolved = self._resolve_drone_id()
+        return resolved if resolved is not None else 1
+
+    def _get_plane_data(self, datatype: str):
+        """Read per-drone telemetry, falling back to the legacy shared slot.
+
+        Telemetry is mirrored by the TaskController into a DataCenter slot keyed
+        by the real drone id. Before that id is known (or for legacy single-drone
+        callers) we fall back to slot ``id=0`` so behaviour is unchanged.
+        """
+        resolved = self._resolve_drone_id()
+        if resolved is not None:
+            data = self._datacenter.get_data("Plane", datatype, resolved)
+            if data is not None:
+                return data
+        return self._datacenter.get_data("Plane", datatype)
+
+    def get_plane_data(self, datatype: str = "flight_data"):
+        """Public accessor for per-drone telemetry (e.g. flight_data, heartbeat)."""
+        return self._get_plane_data(datatype)
+
     # =============================================System Config======================================================================#
 
     def connect(self, server_ip, enable_file_logging: bool = True, log_dir: str = "logs"):
@@ -110,16 +156,19 @@ class Controlserver:
             runtime_config=self._config,
             enable_file_logging=enable_file_logging,
             log_dir=log_dir,
+            drone_id=self._drone_id,
         )
         print(f"connect to {server_ip}")
         # data = self._taskcontroller._wait_state(SysState.P_State_GetHeartbeat, 5)
         time.sleep(3)
-        data = self._datacenter.get_data("Plane", "heartbeat")
+        data = self._get_plane_data("heartbeat")
         if data == None:
             print("connect error")
             return False  # TODO : RESTORE
         print("connect wifi")
-        self._taskcontroller.create_task(UserTask.S_Fly_Plane_time, {"plane_id": 1})
+        self._taskcontroller.create_task(
+            UserTask.S_Fly_Plane_time, {"plane_id": self._resolve_command_id()}
+        )
         self._taskcontroller.udp_heartbeat_send_thread()
         return True
 
@@ -168,8 +217,8 @@ class Controlserver:
 
     # 8.Linux
     def Plane_Linux_cmd(self, cmd, ack, mode, data, reserve):
-        # Use actual drone plane_id from config (set during connection)
-        plane_id = fylo_config.drone_id if fylo_config.drone_id else 1
+        # Use the per-connection drone id (discovered or explicitly configured)
+        plane_id = self._resolve_command_id()
 
         self._taskcontroller.create_task(
             UserTask.S_Fly_Linux_cmd,
@@ -186,7 +235,7 @@ class Controlserver:
 
     def Plane_getBarrier(self):
 
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         _barrierList = {
             "forward": False,
             "back": False,
@@ -205,13 +254,13 @@ class Controlserver:
         return _barrierList
 
     def get_battery(self):
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         if data == None:
             return 0
         return data.battery_volumn
 
     def get_coordinate(self):
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         if data == None:
             return [0, 0, 0]
         return [int(data.x), int(data.y), int(data.z)]
@@ -224,31 +273,31 @@ class Controlserver:
         return data.get("cmd") == 7
 
     def get_yaw(self):
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         if data == None:
             return [0, 0, 0]
         return [int(data.yaw / 100), int(data.pitch / 100), int(data.roll / 100)]
 
     def get_accelerated_speed(self):
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         if data == None:
             return [0, 0, 0]
         return [int(data.accx), int(data.accy), int(data.accz)]
 
     def get_plane_speed(self):
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         if data == None:
             return [0, 0, 0]
         return [int(data.vel_x), int(data.vel_y), int(data.vel_z)]
 
     def get_plane_distance(self):
-        data = self._datacenter.get_data("Plane", "flight_data")
+        data = self._get_plane_data("flight_data")
         if data == None:
             return 0
         return int(data.distance)
 
     def get_plane_id(self):
-        return fylo_config.drone_id
+        return self._resolve_drone_id()
 
     def single_fly_lamplight(self, r, g, b, duration, mode, token=0):
         # print(self._taskcontroller._datacenter.get_data(Device.Plane,SysState.P_State_GetHeartbeat,1),8888888888888)
@@ -256,7 +305,7 @@ class Controlserver:
             UserTask.S_Fly_Lamplight,
             {
                 "_token": token,
-                "plane_id": 1,
+                "plane_id": self._resolve_command_id(),
                 "r": r,
                 "g": g,
                 "b": b,
@@ -283,13 +332,13 @@ class Controlserver:
             token: Command token (0=auto)
             blocking: Wait for completion
         """
-        data = self._datacenter.get_data("Plane", "heartbeat")
+        data = self._get_plane_data("heartbeat")
         if data != None and data.drone_status == 2:
             return self._taskcontroller.create_task(
                 UserTask.S_Fly_Takeoff,
                 {
                     "_token": token,
-                    "plane_id": 1,
+                    "plane_id": self._resolve_command_id(),
                     "height": height,
                     "led": led,
                     "flags": flags,
@@ -303,14 +352,14 @@ class Controlserver:
     # @planeDate_decorator
     def single_fly_touchdown(self, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Touchdown, {"_token": token, "plane_id": 1, "led": led, "blocking": blocking}
+            UserTask.S_Fly_Touchdown, {"_token": token, "plane_id": self._resolve_command_id(), "led": led, "blocking": blocking}
         )
 
     # @planeDate_decorator
     def single_fly_forward(self, distance, led, token=0, blocking=True, speed=100):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Forward,
-            {"_token": token, "plane_id": 1, "distance": distance, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "distance": distance, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
@@ -318,56 +367,56 @@ class Controlserver:
 
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Back,
-            {"_token": token, "plane_id": 1, "distance": distance, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "distance": distance, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
     def single_fly_left(self, distance, led, token=0, blocking=True, speed=100):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Left,
-            {"_token": token, "plane_id": 1, "distance": distance, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "distance": distance, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
     def single_fly_right(self, distance, led, token=0, blocking=True, speed=100):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Right,
-            {"_token": token, "plane_id": 1, "distance": distance, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "distance": distance, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
     def single_fly_up(self, height, led, token=0, blocking=True, speed=100):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Up,
-            {"_token": token, "plane_id": 1, "height": height, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "height": height, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
     def single_fly_down(self, height, led, token=0, blocking=True, speed=100):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Down,
-            {"_token": token, "plane_id": 1, "height": height, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "height": height, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
     def single_fly_turnleft(self, angle, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_TurnLeft,
-            {"_token": token, "plane_id": 1, "angle": angle, "led": led, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "angle": angle, "led": led, "blocking": blocking},
         )
 
     # @planeDate_decorator
     def single_fly_turnright(self, angle, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_TurnRight,
-            {"_token": token, "plane_id": 1, "angle": angle, "led": led, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "angle": angle, "led": led, "blocking": blocking},
         )
 
     # @planeDate_decorator
     def single_fly_radius_around(self, radius, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_RadiusAround,
-            {"_token": token, "plane_id": 1, "radius": radius, "led": led, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "radius": radius, "led": led, "blocking": blocking},
         )
 
     # @planeDate_decorator
@@ -376,7 +425,7 @@ class Controlserver:
             UserTask.S_Fly_CurvilinearFlight,
             {
                 "_token": token,
-                "plane_id": 1,
+                "plane_id": self._resolve_command_id(),
                 "x": x,
                 "y": y,
                 "z": z,
@@ -390,7 +439,7 @@ class Controlserver:
     def single_fly_autogyration360(self, num, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_TurnLeft360,
-            {"_token": token, "plane_id": 1, "num": num, "led": led, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "num": num, "led": led, "blocking": blocking},
         )
 
     # def single_fly_turnright360(self,   num, token = 0):
@@ -400,7 +449,7 @@ class Controlserver:
     def single_fly_hover_flight(self, duration, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_HoverFlight,
-            {"_token": token, "plane_id": 1, "time": duration, "led": led, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "time": duration, "led": led, "blocking": blocking},
         )
 
     # @planeDate_decorator
@@ -409,7 +458,7 @@ class Controlserver:
             UserTask.S_Fly_Bounce,
             {
                 "_token": token,
-                "plane_id": 1,
+                "plane_id": self._resolve_command_id(),
                 "height": height,
                 "frequency": frequency,
                 "led": led,
@@ -421,36 +470,36 @@ class Controlserver:
     def single_fly_straight_flight(self, x, y, z, led, token=0, blocking=True, speed=100):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_StraightFlight,
-            {"_token": token, "plane_id": 1, "x": x, "y": y, "z": z, "led": led, "blocking": blocking, "speed": speed},
+            {"_token": token, "plane_id": self._resolve_command_id(), "x": x, "y": y, "z": z, "led": led, "blocking": blocking, "speed": speed},
         )
 
     # @planeDate_decorator
     def single_fly_barrier_aircraft(self, mode, token=0):
         self._taskcontroller.create_task(
             UserTask.S_Fly_Barrier_aircraft,
-            {"_token": token, "plane_id": 1, "mode": mode},
+            {"_token": token, "plane_id": self._resolve_command_id(), "mode": mode},
         )
 
     # @planeDate_decorator
     def single_fly_somersault(self, direction, led, token=0, blocking=True):
         return self._taskcontroller.create_task(
             UserTask.S_Fly_FlipForward,
-            {"_token": token, "plane_id": 1, "direction": direction, "led": led, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "direction": direction, "led": led, "blocking": blocking},
         )
 
     def single_fly_flip_back(self, token=0, blocking=True):
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_FlipBack, {"_token": token, "plane_id": 1, "led": 0, "blocking": blocking}
+            UserTask.S_Fly_FlipBack, {"_token": token, "plane_id": self._resolve_command_id(), "led": 0, "blocking": blocking}
         )
 
     def single_fly_flip_left(self, token=0, blocking=True):
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_FlipLeft, {"_token": token, "plane_id": 1, "led": 0, "blocking": blocking}
+            UserTask.S_Fly_FlipLeft, {"_token": token, "plane_id": self._resolve_command_id(), "led": 0, "blocking": blocking}
         )
 
     def single_fly_flip_right(self, token=0, blocking=True):
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_FlipRight, {"_token": token, "plane_id": 1, "led": 0, "blocking": blocking}
+            UserTask.S_Fly_FlipRight, {"_token": token, "plane_id": self._resolve_command_id(), "led": 0, "blocking": blocking}
         )
 
     def single_fly_flip_rtp(self):
@@ -590,11 +639,11 @@ class Controlserver:
     #
 
     def plane_fly_arm(self, token=0):
-        data = self._datacenter.get_data("Plane", "heartbeat")
+        data = self._get_plane_data("heartbeat")
 
         if data != None and data.drone_status == 2:
             return self._taskcontroller.create_task(
-                UserTask.S_Fly_unlock, {"_token": token, "plane_id": 1}
+                UserTask.S_Fly_unlock, {"_token": token, "plane_id": self._resolve_command_id()}
             )
 
         print("")
@@ -602,25 +651,25 @@ class Controlserver:
     def plane_fly_disarm(self, token=0):
 
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_lock, {"_token": token, "plane_id": 1}
+            UserTask.S_Fly_lock, {"_token": token, "plane_id": self._resolve_command_id()}
         )
 
     def enable_led(self, token=0, blocking=True):
         """Enable LED - formation cmd 0x0C (12)"""
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Enable_LED, {"_token": token, "plane_id": 1, "blocking": blocking}
+            UserTask.S_Fly_Enable_LED, {"_token": token, "plane_id": self._resolve_command_id(), "blocking": blocking}
         )
 
     def disable_led(self, token=0, blocking=True):
         """Disable LED - formation cmd 0x0D (13)"""
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Disable_LED, {"_token": token, "plane_id": 1, "blocking": blocking}
+            UserTask.S_Fly_Disable_LED, {"_token": token, "plane_id": self._resolve_command_id(), "blocking": blocking}
         )
 
     def cancel_rgb(self, token=0, blocking=True):
         """Cancel RGB animation - formation cmd 0x1B (27)"""
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Cancel_RGB, {"_token": token, "plane_id": 1, "blocking": blocking}
+            UserTask.S_Fly_Cancel_RGB, {"_token": token, "plane_id": self._resolve_command_id(), "blocking": blocking}
         )
 
     def vertical_circle(self, radius: float | int, token: int = 0, blocking: bool = True):
@@ -631,7 +680,7 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Vertical_Circle,
-            {"_token": token, "plane_id": 1, "radius": radius, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "radius": radius, "blocking": blocking},
         )
 
     def set_avoidance(
@@ -655,7 +704,7 @@ class Controlserver:
             UserTask.S_Fly_Set_Avoidance,
             {
                 "_token": token,
-                "plane_id": 1,
+                "plane_id": self._resolve_command_id(),
                 "direction": direction,
                 "barrier_mask": barrier_mask,
                 "x": x,
@@ -667,7 +716,7 @@ class Controlserver:
     def get_product_id(self, token=0):
         """Get product ID/autopilot version - formation cmd 0x2C (44)"""
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Get_Product_ID, {"_token": token, "plane_id": 1}
+            UserTask.S_Fly_Get_Product_ID, {"_token": token, "plane_id": self._resolve_command_id()}
         )
 
     def set_velocity(
@@ -685,7 +734,7 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Set_Velocity,
-            {"_token": token, "plane_id": 1, "level": level, "horizontal_vel": horizontal_vel, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "level": level, "horizontal_vel": horizontal_vel, "blocking": blocking},
         )
 
     def set_yawrate(self, level: int, token: int = 0, blocking: bool = True):
@@ -696,7 +745,7 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Set_Yawrate,
-            {"_token": token, "plane_id": 1, "level": level, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "level": level, "blocking": blocking},
         )
 
     def set_rgb_brightness(self, brightness: int, token: int = 0, blocking: bool = True):
@@ -707,19 +756,19 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Set_RGB_Brightness,
-            {"_token": token, "plane_id": 1, "brightness": brightness, "blocking": blocking},
+            {"_token": token, "plane_id": self._resolve_command_id(), "brightness": brightness, "blocking": blocking},
         )
 
     def enable_battery_failsafe(self, token=0):
         """Enable battery failsafe - formation cmd 0x35 (53)"""
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Enable_Battery_FS, {"_token": token, "plane_id": 1}
+            UserTask.S_Fly_Enable_Battery_FS, {"_token": token, "plane_id": self._resolve_command_id()}
         )
 
     def disable_battery_failsafe(self, token=0):
         """Disable battery failsafe - formation cmd 0x36 (54)"""
         return self._taskcontroller.create_task(
-            UserTask.S_Fly_Disable_Battery_FS, {"_token": token, "plane_id": 1}
+            UserTask.S_Fly_Disable_Battery_FS, {"_token": token, "plane_id": self._resolve_command_id()}
         )
 
     def set_parameter(
@@ -747,7 +796,7 @@ class Controlserver:
             UserTask.S_Fly_Set_Parameter,
             {
                 "_token": token,
-                "plane_id": 1,
+                "plane_id": self._resolve_command_id(),
                 "velocity": velocity,
                 "yaw_rate": yaw_rate,
                 "brightness": brightness,
@@ -766,7 +815,7 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Operate,
-            {"_token": token, "plane_id": 1, "status": status},
+            {"_token": token, "plane_id": self._resolve_command_id(), "status": status},
         )
 
     def set_land_speed(self, fast: bool = False, token: int = 0):
@@ -777,7 +826,7 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Set_Land_Speed,
-            {"_token": token, "plane_id": 1, "fast": fast},
+            {"_token": token, "plane_id": self._resolve_command_id(), "fast": fast},
         )
 
     def set_video_resolution(self, resolution: int, token: int = 0):
@@ -794,7 +843,7 @@ class Controlserver:
         """
         return self._taskcontroller.create_task(
             UserTask.S_Fly_Set_Video_Resolution,
-            {"_token": token, "plane_id": 1, "resolution": int(resolution)},
+            {"_token": token, "plane_id": self._resolve_command_id(), "resolution": int(resolution)},
         )
 
     def set_wifi_mode(self, wifi_mode: int, channel_id: int = 0, token: int = 0):
@@ -823,7 +872,7 @@ class Controlserver:
             UserTask.S_Fly_Set_WiFi_Mode,
             {
                 "_token": token,
-                "plane_id": 1,
+                "plane_id": self._resolve_command_id(),
                 "wifi_mode": int(wifi_mode),
                 "channel_id": channel_id,
             },
