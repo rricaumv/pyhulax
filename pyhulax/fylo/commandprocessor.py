@@ -40,15 +40,27 @@ def refresh_runtime_config() -> None:
 class CommandProcessor:
     cmd = None
 
-    def __init__(self, cmd):
+    def __init__(self, cmd, mav=None, drone_id=None):
         self._cmd = cmd
 
-        if _mavlink.srcComponent == 2:
-            _mavlink.srcComponent = config.bind_client
+        # Use the per-connection MAVLink encoder supplied by the owning
+        # TaskController. Fall back to the shared module-level encoder only when
+        # called without one (legacy/single-drone code paths and tests).
+        self._mav = mav if mav is not None else _mavlink
 
-        if not self._cmd._data.get("plane_id") is None:
-            self._cmd._data["plane_id"] = config.drone_id
-        # _mavlink.srcComponent= config.bind_client
+        if self._mav.srcComponent == 2:
+            self._mav.srcComponent = config.bind_client
+
+        # Thread the real per-connection drone id into the command payload.
+        # Priority: explicit per-connection id > existing payload id > legacy
+        # global. This replaces the old behaviour of always overwriting with the
+        # shared ``config.drone_id`` global, which cross-contaminated commands
+        # across multiple drones.
+        if self._cmd._data.get("plane_id") is not None:
+            if drone_id is not None:
+                self._cmd._data["plane_id"] = drone_id
+            elif config.drone_id is not None:
+                self._cmd._data["plane_id"] = config.drone_id
 
     def get_buf(self):
         pass
@@ -73,7 +85,7 @@ class Plane_Linux_cmd(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.plane_command_encode(
+        msg = self._mav.plane_command_encode(
             data["utc"],
             data["token"],
             data["data"],
@@ -83,8 +95,8 @@ class Plane_Linux_cmd(CommandProcessor):
             data["type"],
             data["reserve"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -120,7 +132,7 @@ class SFLamplight(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             duration,
             param2,
             mode_flag,
@@ -137,8 +149,8 @@ class SFLamplight(CommandProcessor):
             data["token"],
         )
 
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -172,7 +184,7 @@ class SFTakeoffCP(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             height,
             flags,
             mode_flag,
@@ -188,8 +200,8 @@ class SFTakeoffCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -219,7 +231,7 @@ class SFTouchdownCP(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,
             param2,
             mode_flag,
@@ -235,8 +247,8 @@ class SFTouchdownCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -270,7 +282,7 @@ class SFForwardCP(CommandProcessor):
         # yaw: rotation angle (unused for forward)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -286,8 +298,8 @@ class SFForwardCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -321,7 +333,7 @@ class SFBackCP(CommandProcessor):
         # yaw: rotation angle (unused for back)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -337,8 +349,8 @@ class SFBackCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -372,7 +384,7 @@ class SFLeftCP(CommandProcessor):
         # yaw: rotation angle (unused for left)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -388,8 +400,8 @@ class SFLeftCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -423,7 +435,7 @@ class SFRightCP(CommandProcessor):
         # yaw: rotation angle (unused for right)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -439,8 +451,8 @@ class SFRightCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -477,7 +489,7 @@ class SFUpCP(CommandProcessor):
         # yaw: rotation angle (unused for up)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -493,8 +505,8 @@ class SFUpCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -531,7 +543,7 @@ class SFDownCP(CommandProcessor):
         # yaw: rotation angle (unused for down)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -547,8 +559,8 @@ class SFDownCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -577,7 +589,7 @@ class SFTurnLeftCP(CommandProcessor):
         # yaw: rotation angle in degrees (positive = CCW/left)
         yaw_angle = data.get("angle", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,
             param2,
             mode_flag,
@@ -593,8 +605,8 @@ class SFTurnLeftCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -623,7 +635,7 @@ class SFTurnRightCP(CommandProcessor):
         # yaw: rotation angle in degrees (negative = CW/right, caller handles sign)
         yaw_angle = data.get("angle", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,
             param2,
             mode_flag,
@@ -639,8 +651,8 @@ class SFTurnRightCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -672,7 +684,7 @@ class SFTurnLeft360CP(CommandProcessor):
         # yaw: unused (direction is implied by num sign)
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             num_turns,
             param2,
             mode_flag,
@@ -688,8 +700,8 @@ class SFTurnLeft360CP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -721,7 +733,7 @@ class SFTurnRight360CP(CommandProcessor):
         # yaw: unused
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             num_turns,
             param2,
             mode_flag,
@@ -737,8 +749,8 @@ class SFTurnRight360CP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -772,7 +784,7 @@ class SFBounceCP(CommandProcessor):
         # yaw: unused
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             count,
             param2,
             mode_flag,
@@ -788,8 +800,8 @@ class SFBounceCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -825,7 +837,7 @@ class SFStraightFlightCP(CommandProcessor):
         # yaw: rotation angle (must be int for MAVLink struct)
         yaw_angle = int(data.get("yaw", 0))
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -841,8 +853,8 @@ class SFStraightFlightCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -873,7 +885,7 @@ class SFFlipForwardCP(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             direction,
             param2,
             mode_flag,
@@ -889,8 +901,8 @@ class SFFlipForwardCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -920,7 +932,7 @@ class SFFlipBackCP(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             direction,
             param2,
             mode_flag,
@@ -936,8 +948,8 @@ class SFFlipBackCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -967,7 +979,7 @@ class SFFlipLeftCP(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             direction,
             param2,
             mode_flag,
@@ -983,8 +995,8 @@ class SFFlipLeftCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1014,7 +1026,7 @@ class SFFlipRightCP(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             direction,
             param2,
             mode_flag,
@@ -1030,8 +1042,8 @@ class SFFlipRightCP(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1067,7 +1079,7 @@ class SFCurvilinearFlight(CommandProcessor):
         # yaw: unused for curve flight
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             velocity,
             param2,
             mode_flag,
@@ -1083,8 +1095,8 @@ class SFCurvilinearFlight(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1113,7 +1125,7 @@ class SFHoverFlight(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             duration,
             param2,
             mode_flag,
@@ -1129,8 +1141,8 @@ class SFHoverFlight(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1159,7 +1171,7 @@ class SFBarrier_aircraft(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,
             param2,
             mode_flag,
@@ -1175,8 +1187,8 @@ class SFBarrier_aircraft(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1185,11 +1197,11 @@ class SFLine_walking(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.line_walking_encode(
+        msg = self._mav.line_walking_encode(
             data["fun_id"], data["dist"], data["tv"], data["way_color"], 0
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1198,9 +1210,9 @@ class SFAiIdentifies(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.camera_encode(data["mode"], 0, 0, 0, 0, 0, 0, 0)
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        msg = self._mav.camera_encode(data["mode"], 0, 0, 0, 0, 0, 0, 0)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1209,11 +1221,11 @@ class SFQr_code_tracking(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.camera_encode(
+        msg = self._mav.camera_encode(
             data["mode"], data["type"], 0, 0, 0, 0, 0, data["time_duration"]
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1222,7 +1234,7 @@ class SFQr_code_aligns(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.qrrecognite_deal_encode(
+        msg = self._mav.qrrecognite_deal_encode(
             data["time_duration"],
             data["search_radius"],
             20,
@@ -1236,8 +1248,8 @@ class SFQr_code_aligns(CommandProcessor):
             0,
             0,
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1246,9 +1258,9 @@ class SF_ColorRecog(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.colorrecog_encode(data["Mode"], 0, 0, 0, 0)
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        msg = self._mav.colorrecog_encode(data["Mode"], 0, 0, 0, 0)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1272,7 +1284,7 @@ class SF_unlock(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,
             param2,
             mode_flag,
@@ -1288,8 +1300,8 @@ class SF_unlock(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1313,7 +1325,7 @@ class SF_lock(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,
             param2,
             mode_flag,
@@ -1329,8 +1341,8 @@ class SF_lock(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1361,7 +1373,7 @@ class SFCircumvolant(CommandProcessor):
         distance_z = int(data.get("z", 0))
         yaw_angle = data.get("yaw", 0)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             radius,
             param2,
             mode_flag,
@@ -1377,8 +1389,8 @@ class SFCircumvolant(CommandProcessor):
             data.get("index", Defaults.INDEX),
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1397,11 +1409,11 @@ class SF_Plane_time(CommandProcessor):
         print(f"[DEBUG] token type: {type(data.get('token'))}, value: {data.get('token')}")
         print(f"[DEBUG] plane_id type: {type(data.get('plane_id'))}, value: {data.get('plane_id')}")
 
-        msg = _mavlink.plane_ack_extend_encode(
+        msg = self._mav.plane_ack_extend_encode(
             data["token"], data["plane_id"], 25, 0, 0, formatted_time.encode()
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1411,7 +1423,7 @@ class SF_Enable_LED(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             0,  # param1
             0,  # param2
             0,  # param3
@@ -1427,8 +1439,8 @@ class SF_Enable_LED(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1438,7 +1450,7 @@ class SF_Disable_LED(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             0,  # param1
             0,  # param2
             0,  # param3
@@ -1454,8 +1466,8 @@ class SF_Disable_LED(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1465,7 +1477,7 @@ class SF_Cancel_RGB(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             0,  # param1
             0,  # param2
             0,  # param3
@@ -1481,8 +1493,8 @@ class SF_Cancel_RGB(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1496,7 +1508,7 @@ class SF_Vertical_Circle(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             data["radius"],  # param1: radius in cm
             0,  # param2
             2,  # param3: one_key_function flag
@@ -1512,8 +1524,8 @@ class SF_Vertical_Circle(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1532,7 +1544,7 @@ class SF_Set_Avoidance(CommandProcessor):
         direction = data.get("direction", 0)
         barrier_mask = data.get("barrier_mask", 0x3F)  # all directions by default
         param1 = (direction << 8) | barrier_mask
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,  # param1: direction and barrier mask
             0,  # param2
             0,  # param3
@@ -1548,8 +1560,8 @@ class SF_Set_Avoidance(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1562,7 +1574,7 @@ class SF_Get_Product_ID(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             0,  # param1
             0,  # param2
             0,  # param3
@@ -1578,8 +1590,8 @@ class SF_Get_Product_ID(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1593,7 +1605,7 @@ class SF_Set_Velocity(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             data["level"],  # param1: velocity in cm/s (0-300)
             data.get("horizontal_vel", 0),  # param2: horizontal velocity override
             0,  # param3
@@ -1609,8 +1621,8 @@ class SF_Set_Velocity(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1623,7 +1635,7 @@ class SF_Set_Yawrate(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             data["level"],  # param1: yaw rate level
             0,  # param2
             0,  # param3
@@ -1639,8 +1651,8 @@ class SF_Set_Yawrate(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1653,7 +1665,7 @@ class SF_Set_RGB_Brightness(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             data["brightness"],  # param1: brightness level
             0,  # param2
             0,  # param3
@@ -1669,8 +1681,8 @@ class SF_Set_RGB_Brightness(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1683,7 +1695,7 @@ class SF_Enable_Battery_FS(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             0,  # param1
             0,  # param2
             0,  # param3
@@ -1699,8 +1711,8 @@ class SF_Enable_Battery_FS(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1713,7 +1725,7 @@ class SF_Disable_Battery_FS(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             0,  # param1
             0,  # param2
             0,  # param3
@@ -1729,8 +1741,8 @@ class SF_Disable_Battery_FS(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1762,7 +1774,7 @@ class SF_Set_Parameter(CommandProcessor):
         fast_land = 1 if data.get("fast_land", False) else 0
         param2 = avoidance | (batt_fs << 8) | (fast_land << 16)
 
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             param1,  # param1: velocity, yaw_rate, brightness
             param2,  # param2: avoidance, batt_fs, fast_land
             0,  # param3
@@ -1778,8 +1790,8 @@ class SF_Set_Parameter(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1792,7 +1804,7 @@ class SF_Operate(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             data["status"],  # param1: operate status
             0,  # param2
             0,  # param3
@@ -1808,8 +1820,8 @@ class SF_Operate(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1823,7 +1835,7 @@ class SF_Set_Land_Speed(CommandProcessor):
 
     def get_buf(self):
         data = self._cmd.get_data()
-        msg = _mavlink.formation_cmd_encode(
+        msg = self._mav.formation_cmd_encode(
             1 if data.get("fast", False) else 0,  # param1: 0=slow, 1=fast
             0,  # param2
             0,  # param3
@@ -1839,8 +1851,8 @@ class SF_Set_Land_Speed(CommandProcessor):
             0,  # index
             data["token"],
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1865,7 +1877,7 @@ class SF_Set_Video_Resolution(CommandProcessor):
         now = datetime.now()
         utc = int(now.timestamp())
 
-        msg = _mavlink.plane_command_encode(
+        msg = self._mav.plane_command_encode(
             utc,                        # utc timestamp
             data["token"],              # token
             data["resolution"],         # data: resolution level (0, 1, 2)
@@ -1875,8 +1887,8 @@ class SF_Set_Video_Resolution(CommandProcessor):
             0,                          # message_type
             0,                          # reserve
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1905,7 +1917,7 @@ class SF_Set_WiFi_Mode(CommandProcessor):
         now = datetime.now()
         utc = int(now.timestamp())
 
-        msg = _mavlink.plane_command_encode(
+        msg = self._mav.plane_command_encode(
             utc,                        # utc timestamp
             data["token"],              # token
             data.get("channel_id", 0),  # data: channel_id for CHANNEL_MANUAL mode
@@ -1915,8 +1927,8 @@ class SF_Set_WiFi_Mode(CommandProcessor):
             data["wifi_mode"],          # message_type: WiFi mode (0-9)
             0,                          # reserve
         )
-        _mavlink.send(msg)
-        buf = msg.pack(_mavlink)
+        self._mav.send(msg)
+        buf = msg.pack(self._mav)
         return buf
 
 
@@ -1973,8 +1985,9 @@ command_processor_list = [
 
 
 class CommandProcessorFactory:
-    def get_command_processor(ucmd):
+    @staticmethod
+    def get_command_processor(ucmd, mav=None, drone_id=None):
         for cl in command_processor_list:
             if cl.cmd == ucmd.get_command():
-                return cl(ucmd)
+                return cl(ucmd, mav, drone_id)
         return None

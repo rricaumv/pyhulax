@@ -141,6 +141,7 @@ class DroneAPI:
         file_log_dir: str = "logs",
         enable_command_logging: bool = True,
         command_log_dir: str = "logs",
+        drone_id: int | None = None,
     ):
         """
         Initialize DroneAPI.
@@ -155,9 +156,13 @@ class DroneAPI:
             file_log_dir: Directory for JSONL log files (default: ./logs)
             enable_command_logging: Enable JSONL logging of all API commands
             command_log_dir: Directory for command log files (default: ./logs)
+            drone_id: Optional explicit drone id for this connection. When omitted
+                the id is discovered automatically from the drone's telemetry.
+                Pin this when controlling multiple drones concurrently so each
+                connection's commands and telemetry are unambiguously scoped.
         """
         self._config = resolve_config(config)
-        self._server = Controlserver(runtime_config=self._config)
+        self._server = Controlserver(runtime_config=self._config, drone_id=drone_id)
         self._connected = False
         self._flight_logger = flight_logger
         self._session_id: str | None = None
@@ -758,9 +763,8 @@ class DroneAPI:
         Returns:
             DroneState with all telemetry data
         """
-        dc = self._server._datacenter
-        raw_flight = dc.get_data("Plane", "flight_data")
-        raw_heartbeat = dc.get_data("Plane", "heartbeat")
+        raw_flight = self._server.get_plane_data("flight_data")
+        raw_heartbeat = self._server.get_plane_data("heartbeat")
 
         flight_data = None
         if raw_flight is not None:
@@ -799,7 +803,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("position")
         return Vector3(x=float(data.x), y=float(data.y), z=float(data.z))
@@ -814,7 +818,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("orientation")
         return Orientation(
@@ -833,7 +837,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("battery")
         return int(data.battery_volumn)
@@ -848,7 +852,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("altitude")
         return float(data.distance)
@@ -863,7 +867,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("velocity")
         return Vector3(x=float(data.vel_x), y=float(data.vel_y), z=float(data.vel_z))
@@ -878,7 +882,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("acceleration")
         return Vector3(x=float(data.accx), y=float(data.accy), z=float(data.accz))
@@ -890,7 +894,7 @@ class DroneAPI:
         Returns:
             Obstacles indicating which directions are blocked
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             return Obstacles()
         return Obstacles.from_bitmask(data.barrier)
@@ -905,7 +909,7 @@ class DroneAPI:
         Raises:
             TelemetryUnavailable: If no telemetry data
         """
-        data = self._server._datacenter.get_data("Plane", "flight_data")
+        data = self._server.get_plane_data("flight_data")
         if data is None:
             raise TelemetryUnavailable("flight_data")
         return FlightData.from_mavlink(data)
@@ -3067,12 +3071,12 @@ class DroneAPI:
         if not self._connected:
             raise NotReady("Not connected to drone")
 
-        heartbeat = self._server._datacenter.get_data("Plane", "heartbeat")
+        heartbeat = self._server.get_plane_data("heartbeat")
         if heartbeat is None:
             raise NotReady("No heartbeat from drone")
 
         if check_flying:
-            flight_data = self._server._datacenter.get_data("Plane", "flight_data")
+            flight_data = self._server.get_plane_data("flight_data")
             if flight_data and flight_data.battery_volumn < self._battery_threshold:
                 raise LowBattery(flight_data.battery_volumn, self._battery_threshold)
 

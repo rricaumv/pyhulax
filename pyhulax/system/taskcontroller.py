@@ -29,6 +29,7 @@ class TaskController:
         runtime_config: DroneConfig | None = None,
         enable_file_logging: bool = True,
         log_dir: str = "logs",
+        drone_id: int | None = None,
     ):
         # self._communication_controller = communication_controller
         # self._buffer = self._communication_controller.get_buffer()
@@ -36,8 +37,26 @@ class TaskController:
         self._config = resolve_config(runtime_config)
         self.server_ip = server_ip or self._config.network.drone_ip
         self._controller_status = 1
-        self._plane_id = 1
+        # Per-connection drone id. May be supplied explicitly (multi-drone) or
+        # discovered from this connection's own telemetry stream at runtime.
+        self._drone_id = drone_id
+        self._plane_id = drone_id if drone_id is not None else 1
         self._token = None
+
+        # Per-connection MAVLink encoders. Each TaskController owns its own
+        # encoder so the sequence counter and source component are not shared
+        # across drones (the old module-level encoder in commandprocessor was
+        # mutated by every connection).
+        self._mavlink = mavlink.MAVLink(
+            None,
+            src_system=system.mavlink_system_id,
+            src_component=system.mavlink_component_id,
+        )
+        self._mavlink_file = mavlink.MAVLink(
+            None,
+            src_system=system.mavlink_system_id,
+            src_component=system.mavlink_component_file_id,
+        )
         # self._dancefileanalyzer = dancefileanalyzer.DanceFileAnalyzer(
         #     os.path.abspath(os.path.join(os.path.dirname(__file__), '../dancefile')))
         self._event = event.Event()
@@ -248,7 +267,9 @@ class TaskController:
 
     def _send_command(self, syscmd, boradcast=False):
 
-        cp = CommandProcessorFactory.get_command_processor(syscmd)
+        cp = CommandProcessorFactory.get_command_processor(
+            syscmd, self._mavlink, self._drone_id
+        )
         buf = cp.get_buf()
 
         if buf != None and boradcast == False:
@@ -292,6 +313,56 @@ class TaskController:
     
     
     
+
+    def get_drone_id(self):
+        """Return the drone id bound to this connection, if known.
+
+        The id is either supplied explicitly at construction or discovered from
+        this connection's own telemetry stream (heartbeat / plane status).
+        """
+        return self._drone_id
+
+    def _capture_drone_id(self, msg):
+        """Learn this connection's drone id from its own message stream.
+
+        Only the messages that carry an authoritative identity are used:
+        REPORT_STATS (207, ``drone_id``) and PLANE_STATUS (231, ``plane_id``).
+        Once learned, the id is sticky for the lifetime of the connection.
+        """
+        if self._drone_id is not None:
+            return
+        try:
+            msg_id = msg.get_msg_id()
+        except Exception:
+            return
+        candidate = None
+        if msg_id == 207:
+            candidate = getattr(msg, "drone_id", None)
+        elif msg_id == 231:
+            candidate = getattr(msg, "plane_id", None)
+        if candidate:
+            self._drone_id = candidate
+            self._plane_id = candidate
+
+    def _mirror_telemetry(self, msg):
+        """Mirror per-drone telemetry into the DataCenter keyed by drone id.
+
+        The shared state processors store telemetry under the legacy slot
+        ``id=0`` of the (singleton) DataCenter, which cross-contaminates across
+        drones. Because each TaskController's socket only ever receives its own
+        drone's messages, we additionally store the relevant telemetry under
+        this connection's real drone id so callers can read it unambiguously.
+        """
+        if self._drone_id is None:
+            return
+        try:
+            msg_id = msg.get_msg_id()
+        except Exception:
+            return
+        if msg_id == 206:
+            self._datacenter.set_data("Plane", "flight_data", msg, self._drone_id)
+        elif msg_id == 207:
+            self._datacenter.set_data("Plane", "heartbeat", msg, self._drone_id)
 
     def _wait_state(self, sysstate, timeout):
         # self._dispatcher
@@ -418,6 +489,12 @@ class TaskController:
         while self._controller_status:
             msg = self._msganalyzer.get_msg()
 
+            # Learn this connection's drone id and mirror its telemetry into a
+            # per-drone DataCenter slot before running the shared state
+            # processors (which only write the legacy id=0 slot).
+            self._capture_drone_id(msg)
+            self._mirror_telemetry(msg)
+
             # Log ALL messages first, even if no state processor exists
             # This ensures we capture high-frequency streams like LOCAL_POSITION (msg 72)
             if self._file_logger is not None:
@@ -448,8 +525,11 @@ class TaskController:
         import tempfile
         import os
 
-        # Port is based on plane_id: 9000 + plane_id * 2
-        drone_id = config.drone_id if config.drone_id is not None else 1
+        # Port is based on plane_id: 9000 + plane_id * 2. Prefer this
+        # connection's own drone id; fall back to the legacy global.
+        drone_id = self._drone_id
+        if drone_id is None:
+            drone_id = config.drone_id if config.drone_id is not None else 1
         port = self._config.network.rtp_base_port + drone_id * 2
 
         print(f"Starting video stream on UDP port {port}")
