@@ -173,12 +173,26 @@ class Controlserver:
         # The drone broadcasts BROADCAST_PLANE_STATUS (msg 232) as a discovery
         # beacon and only starts streaming its REPORT_STATS heartbeat once the
         # ground station announces itself. The beacon carries the bind_client
-        # the app must use as its source component, so wait briefly for it
-        # (unless local-IP detection already resolved bind_client) before
-        # announcing.
+        # the drone expects us to use as our source component, so wait briefly
+        # for it before announcing.
         bind_deadline = min(deadline, time.time() + 3.0)
-        while time.time() < bind_deadline and fylo_config.bind_client in (None, 255):
+        while (
+            time.time() < bind_deadline
+            and fylo_config.drone_reported_bind_client in (None, 255)
+        ):
             time.sleep(0.1)
+
+        # The drone is authoritative about the client id it expects in our
+        # APP_HEARTBEAT, so prefer the advertised value over the local-IP
+        # detection heuristic (which can guess a different last octet).
+        drone_bc = fylo_config.drone_reported_bind_client
+        if drone_bc is not None and drone_bc != 255:
+            if drone_bc != fylo_config.bind_client:
+                print(
+                    f"adopting drone-advertised bind_client {drone_bc} "
+                    f"(local detection guessed {fylo_config.bind_client})"
+                )
+            fylo_config.bind_client = drone_bc
 
         # Announce ourselves (APP_HEARTBEAT broadcast) so the drone binds to us
         # and begins streaming telemetry.
