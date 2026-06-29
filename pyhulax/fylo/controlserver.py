@@ -179,8 +179,11 @@ class Controlserver:
                 except Exception:
                     continue
                 if msg.get_msg_id() == 232:
-                    result = getattr(msg, "bind_client", None)
-                    if result is not None:
+                    bc = getattr(msg, "bind_client", None)
+                    # 255 is the "unbound / no client" sentinel; keep waiting
+                    # for the real client id the drone wants us to use.
+                    if bc is not None and bc != 255:
+                        result = bc
                         break
         finally:
             sock.close()
