@@ -166,16 +166,43 @@ class Controlserver:
         )
         print(f"connect to {server_ip}")
 
-        # Poll for the drone's heartbeat instead of a single fixed-delay check.
-        # Slow links/drones get the full timeout; fast ones return as soon as
-        # the first heartbeat lands. The heartbeat is stored at the legacy id=0
-        # slot by the shared state processor (and mirrored per-drone), so this
-        # reads the same slot the original single-drone code did.
         if connect_timeout is None:
-            connect_timeout = max(5.0, self._config.timeouts.tcp_connect_timeout_sec)
+            connect_timeout = max(8.0, self._config.timeouts.tcp_connect_timeout_sec)
         deadline = time.time() + connect_timeout
+
+        # The drone broadcasts BROADCAST_PLANE_STATUS (msg 232) as a discovery
+        # beacon and only starts streaming its REPORT_STATS heartbeat once the
+        # ground station announces itself. The beacon carries the bind_client
+        # the app must use as its source component, so wait briefly for it
+        # (unless local-IP detection already resolved bind_client) before
+        # announcing.
+        bind_deadline = min(deadline, time.time() + 3.0)
+        while time.time() < bind_deadline and fylo_config.bind_client in (None, 255):
+            time.sleep(0.1)
+
+        # Announce ourselves (APP_HEARTBEAT broadcast) so the drone binds to us
+        # and begins streaming telemetry.
+        self._taskcontroller.udp_heartbeat_send_thread()
+        print(
+            f"announcing to {server_ip} as bind_client={fylo_config.bind_client} "
+            f"(drone advertised {fylo_config.drone_reported_bind_client})"
+        )
+
+        # Poll for the drone's heartbeat. It is stored at the legacy id=0 slot by
+        # the shared state processor (and mirrored per-drone), so this reads the
+        # same slot the original single-drone code did. Alongside the broadcast
+        # announce, also nudge the drone directly with a unicast APP_HEARTBEAT
+        # each second in case subnet broadcast is filtered by the host firewall.
         data = None
+        next_unicast = 0.0
         while time.time() < deadline:
+            now = time.time()
+            if now >= next_unicast:
+                try:
+                    self._taskcontroller.send_app_heartbeat(2)  # 2 = Program mode
+                except Exception:
+                    pass
+                next_unicast = now + 1.0
             data = self._get_plane_data("heartbeat")
             if data is not None:
                 break
@@ -183,6 +210,8 @@ class Controlserver:
 
         if data is None:
             diag = self._taskcontroller.connection_diagnostics()
+            diag["bind_client"] = fylo_config.bind_client
+            diag["drone_reported_bind_client"] = fylo_config.drone_reported_bind_client
             print(
                 f"connect error: no heartbeat from {server_ip} within "
                 f"{connect_timeout:.0f}s"
@@ -192,12 +221,17 @@ class Controlserver:
                 print("  -> TCP never connected: drone unreachable at this IP/port "
                       f"(check WiFi / firewall to {server_ip}:{self._config.network.tcp_port}).")
             elif diag["rx_bytes"] == 0:
-                print("  -> TCP connected but the drone sent no data: it may be waiting "
-                      "for the app to announce itself, or streams telemetry on a "
-                      "different channel.")
+                print("  -> TCP connected but the drone sent no data at all.")
             elif diag["rx_msg_count"] == 0:
                 print("  -> Bytes arrived but no MAVLink message parsed: protocol/framing "
                       "mismatch.")
+            elif set(diag["rx_msg_ids"]) <= {232}:
+                print("  -> Only discovery beacons (msg 232) arrived: the drone did not "
+                      "accept our APP_HEARTBEAT, so it never started streaming telemetry. "
+                      "This is usually a bind_client mismatch (compare bind_client vs "
+                      "drone_reported_bind_client above) or the broadcast not reaching the "
+                      f"drone (check that UDP broadcast to {server_ip.rsplit('.', 1)[0]}.255"
+                      f":{self._config.network.udp_command_port} is allowed).")
             else:
                 print("  -> Messages arrived but no heartbeat (msg 207) among them: "
                       f"saw msg ids {list(diag['rx_msg_ids'])}.")
@@ -211,9 +245,6 @@ class Controlserver:
         self._taskcontroller.create_task(
             UserTask.S_Fly_Plane_time, {"plane_id": self._resolve_command_id()}
         )
-        # Start the APP_HEARTBEAT broadcast once connected (matches the original
-        # ordering that was known to work for single-drone).
-        self._taskcontroller.udp_heartbeat_send_thread()
         return True
 
     def disconnect(self):

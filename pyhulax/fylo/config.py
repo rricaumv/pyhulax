@@ -18,6 +18,7 @@ mavlink_system_id = _cfg.protocol.mavlink_system_id
 mavlink_component_id = _cfg.protocol.mavlink_component_id
 mavlink_component_file_id = _cfg.protocol.mavlink_component_file_id
 bind_client = 255  # Set dynamically from local IP on drone network (192.168.100.x)
+drone_reported_bind_client = None  # Last bind_client advertised by the drone (msg 232)
 drone_id = None  # Set dynamically at runtime
 
 # Command sending protocol configuration
@@ -34,6 +35,7 @@ def apply_runtime_config(runtime_config: DroneConfig) -> None:
     global mavlink_component_id
     global mavlink_component_file_id
     global bind_client
+    global drone_reported_bind_client
     global drone_id
     global command_protocol
 
@@ -45,6 +47,7 @@ def apply_runtime_config(runtime_config: DroneConfig) -> None:
 
     # These are still discovered at runtime per active session.
     bind_client = 255
+    drone_reported_bind_client = None
     drone_id = None
 
     from pyhulax.system import system

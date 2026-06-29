@@ -197,6 +197,10 @@ class BROADCAST_PLANE_STATUS(StateProcessor):
     def get_state(self):
         # print('get auxsetup ack')
 
+        # Always record what the drone advertises so connect() can surface it
+        # for diagnostics even when bind_client was already detected locally.
+        config.drone_reported_bind_client = getattr(self._msg, "bind_client", None)
+
         if config.bind_client == None or config.bind_client == 255:
             config.bind_client = self._msg.bind_client
             print(self._msg)
