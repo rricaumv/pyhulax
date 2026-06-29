@@ -61,6 +61,8 @@ class TaskController:
         self._udp_peer = None
         self._rx_msg_count = 0
         self._rx_msg_ids: dict[int, int] = {}
+        # Last FORMATION_CMD_ACK (msg 209) seen: (cmd, result, token).
+        self._last_formation_ack = None
 
         # Per-connection MAVLink encoders. Each TaskController owns its own
         # encoder so the sequence counter and source component are not shared
@@ -351,6 +353,7 @@ class TaskController:
             "udp_peer": self._udp_peer,
             "rx_msg_count": self._rx_msg_count,
             "rx_msg_ids": dict(sorted(self._rx_msg_ids.items())),
+            "last_formation_ack": self._last_formation_ack,
             "drone_id": self._drone_id,
         }
 
@@ -599,6 +602,12 @@ class TaskController:
                 _mid = msg.get_msg_id()
                 self._rx_msg_count += 1
                 self._rx_msg_ids[_mid] = self._rx_msg_ids.get(_mid, 0) + 1
+                if _mid == 209:  # FORMATION_CMD_ACK
+                    self._last_formation_ack = (
+                        getattr(msg, "cmd", None),
+                        getattr(msg, "result", None),
+                        getattr(msg, "token", None),
+                    )
             except Exception:
                 pass
 
@@ -804,6 +813,11 @@ class TaskController:
             except OSError as e:
                 print(f"warning: could not bind broadcast socket to {self._source_ip}: {e}")
 
+        # The official app sends APP_HEARTBEAT as UNICAST to the drone's command
+        # port (not only broadcast). The drone appears to require this active
+        # unicast heartbeat to keep accepting flight commands, so send both.
+        unicast_dest = (self.server_ip, self._config.network.udp_command_port)
+
         try:
             while self._controller_status:
                 # Use configurable app mode (default 2 = Program)
@@ -812,8 +826,14 @@ class TaskController:
                 _mavlink.send(msg)
                 send_buf = msg.pack(_mavlink)
 
-                ret = self.udp_socket.sendto(send_buf, self.udp_dest)
-                # optionally check ret here
+                try:
+                    self.udp_socket.sendto(send_buf, unicast_dest)
+                except OSError:
+                    pass
+                try:
+                    self.udp_socket.sendto(send_buf, self.udp_dest)
+                except OSError:
+                    pass
 
                 time.sleep(1)
         finally:
