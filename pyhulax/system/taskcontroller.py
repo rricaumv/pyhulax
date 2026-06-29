@@ -43,6 +43,14 @@ class TaskController:
         self._plane_id = drone_id if drone_id is not None else 1
         self._token = None
 
+        # Lightweight connection diagnostics so a failed connect() can report
+        # exactly where the pipeline stalled (TCP connect / bytes / parsing).
+        self._tcp_connected = False
+        self._tcp_error: str | None = None
+        self._rx_bytes = 0
+        self._rx_msg_count = 0
+        self._rx_msg_ids: dict[int, int] = {}
+
         # Per-connection MAVLink encoders. Each TaskController owns its own
         # encoder so the sequence counter and source component are not shared
         # across drones (the old module-level encoder in commandprocessor was
@@ -314,6 +322,17 @@ class TaskController:
     
     
 
+    def connection_diagnostics(self) -> dict:
+        """Snapshot of the receive pipeline state, for connect diagnostics."""
+        return {
+            "tcp_connected": self._tcp_connected,
+            "tcp_error": self._tcp_error,
+            "rx_bytes": self._rx_bytes,
+            "rx_msg_count": self._rx_msg_count,
+            "rx_msg_ids": dict(sorted(self._rx_msg_ids.items())),
+            "drone_id": self._drone_id,
+        }
+
     def get_drone_id(self):
         """Return the drone id bound to this connection, if known.
 
@@ -415,12 +434,14 @@ class TaskController:
             self.server_socket.settimeout(
                 self._config.timeouts.tcp_recv_timeout_sec
             )  # Set timeout for recv after connect
+            self._tcp_connected = True
 
             while self._controller_status:
                 try:
                     recv_data = self.server_socket.recv(2048)
                     if not recv_data:
                         break  # Connection closed
+                    self._rx_bytes += len(recv_data)
                     self._socket_buffer.set_data(recv_data)
                 except timeout:
                     continue  # Check _controller_status and loop again
@@ -428,6 +449,7 @@ class TaskController:
                     break  # Socket was closed
 
         except (OSError, Exception) as e:
+            self._tcp_error = f"{type(e).__name__}: {e}"
             print(f"TCP connection error {host}:{port}: {e}")
 
         finally:
@@ -466,6 +488,7 @@ class TaskController:
         while self._controller_status:
             try:
                 recv_data = self.udp_recive_socket.recv(2048)
+                self._rx_bytes += len(recv_data)
                 self._socket_buffer.set_data(recv_data)
             except timeout:
                 continue  # Check _controller_status and loop again
@@ -488,6 +511,14 @@ class TaskController:
 
         while self._controller_status:
             msg = self._msganalyzer.get_msg()
+
+            # Record which message ids arrive (diagnostics for connect issues).
+            try:
+                _mid = msg.get_msg_id()
+                self._rx_msg_count += 1
+                self._rx_msg_ids[_mid] = self._rx_msg_ids.get(_mid, 0) + 1
+            except Exception:
+                pass
 
             # Learn this connection's drone id and mirror its telemetry into a
             # per-drone DataCenter slot before running the shared state

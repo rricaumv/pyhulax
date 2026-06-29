@@ -166,15 +166,11 @@ class Controlserver:
         )
         print(f"connect to {server_ip}")
 
-        # Start broadcasting APP_HEARTBEAT before waiting. Many hula drones only
-        # begin streaming their own REPORT_STATS/heartbeat once the ground
-        # station announces itself, so sending this first maximises the chance
-        # of receiving telemetry during the connect window.
-        self._taskcontroller.udp_heartbeat_send_thread()
-
         # Poll for the drone's heartbeat instead of a single fixed-delay check.
         # Slow links/drones get the full timeout; fast ones return as soon as
-        # the first heartbeat lands.
+        # the first heartbeat lands. The heartbeat is stored at the legacy id=0
+        # slot by the shared state processor (and mirrored per-drone), so this
+        # reads the same slot the original single-drone code did.
         if connect_timeout is None:
             connect_timeout = max(5.0, self._config.timeouts.tcp_connect_timeout_sec)
         deadline = time.time() + connect_timeout
@@ -186,10 +182,25 @@ class Controlserver:
             time.sleep(0.2)
 
         if data is None:
+            diag = self._taskcontroller.connection_diagnostics()
             print(
                 f"connect error: no heartbeat from {server_ip} within "
                 f"{connect_timeout:.0f}s"
             )
+            print(f"  diagnostics: {diag}")
+            if not diag["tcp_connected"]:
+                print("  -> TCP never connected: drone unreachable at this IP/port "
+                      f"(check WiFi / firewall to {server_ip}:{self._config.network.tcp_port}).")
+            elif diag["rx_bytes"] == 0:
+                print("  -> TCP connected but the drone sent no data: it may be waiting "
+                      "for the app to announce itself, or streams telemetry on a "
+                      "different channel.")
+            elif diag["rx_msg_count"] == 0:
+                print("  -> Bytes arrived but no MAVLink message parsed: protocol/framing "
+                      "mismatch.")
+            else:
+                print("  -> Messages arrived but no heartbeat (msg 207) among them: "
+                      f"saw msg ids {list(diag['rx_msg_ids'])}.")
             self._connect_status = 0
             try:
                 self._taskcontroller.stop_all_task()
@@ -200,6 +211,9 @@ class Controlserver:
         self._taskcontroller.create_task(
             UserTask.S_Fly_Plane_time, {"plane_id": self._resolve_command_id()}
         )
+        # Start the APP_HEARTBEAT broadcast once connected (matches the original
+        # ordering that was known to work for single-drone).
+        self._taskcontroller.udp_heartbeat_send_thread()
         return True
 
     def disconnect(self):

@@ -80,7 +80,7 @@ def takeoff_hover_land(
     connect_timeout: float = 8.0,
 ) -> None:
     """Run a single drone through connect -> takeoff -> hover -> land."""
-    led = LEDConfig(r=0, g=255, b=0, mode=LEDMode.SOLID)
+    led = LEDConfig(r=0, g=255, b=0, mode=LEDMode.CONSTANT)
 
     def log(msg: str) -> None:
         print(f"[{label}] {msg}", flush=True)
