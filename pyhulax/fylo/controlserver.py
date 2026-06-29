@@ -182,17 +182,23 @@ class Controlserver:
         ):
             time.sleep(0.1)
 
-        # The drone is authoritative about the client id it expects in our
-        # APP_HEARTBEAT, so prefer the advertised value over the local-IP
-        # detection heuristic (which can guess a different last octet).
+        # bind_client identifies THIS ground station (the last octet of the
+        # local IP on the drone network, per the C# app). Use the locally
+        # detected value; only fall back to the drone-advertised id if local
+        # detection failed. The drone advertising a *different* id usually means
+        # it is still bound to another client (e.g. the phone app), in which
+        # case it will not stream to us until that binding is released.
         drone_bc = fylo_config.drone_reported_bind_client
-        if drone_bc is not None and drone_bc != 255:
-            if drone_bc != fylo_config.bind_client:
-                print(
-                    f"adopting drone-advertised bind_client {drone_bc} "
-                    f"(local detection guessed {fylo_config.bind_client})"
-                )
+        local_bc = fylo_config.bind_client
+        if local_bc in (None, 255) and drone_bc not in (None, 255):
             fylo_config.bind_client = drone_bc
+        elif drone_bc not in (None, 255) and drone_bc != local_bc:
+            print(
+                f"note: drone advertises bind_client={drone_bc} but this host is "
+                f"{local_bc}. The drone may still be bound to another client "
+                f"(e.g. the phone app, likely at .{drone_bc}). Close that app and "
+                f"power-cycle the drone if it won't bind to this host."
+            )
 
         # Announce ourselves (APP_HEARTBEAT broadcast) so the drone binds to us
         # and begins streaming telemetry.
