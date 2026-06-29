@@ -104,8 +104,11 @@ def takeoff_hover_land(
         try:
             tc = drone._server._taskcontroller  # noqa: SLF001 - demo introspection
             diag = tc.connection_diagnostics()
-            log(f"takeoff result={result}; last_formation_ack(cmd,result,token)="
-                f"{diag.get('last_formation_ack')}; rx_msg_ids={list(diag.get('rx_msg_ids', {}))}")
+            log(f"takeoff result={result}; bind_client={diag.get('bind_client')} "
+                f"source_ip={diag.get('source_ip')}; "
+                f"last_formation_ack(cmd,result,token)={diag.get('last_formation_ack')}; "
+                f"last_plane_ack(cmd,result,type)={diag.get('last_plane_ack')}; "
+                f"rx_msg_ids={list(diag.get('rx_msg_ids', {}))}")
         except Exception as exc:  # noqa: BLE001
             log(f"(could not read takeoff diagnostics: {exc})")
 
