@@ -43,6 +43,72 @@ with DroneAPI() as drone:
     drone.land()
 ```
 
+## Multi-Drone Control
+
+Each `DroneAPI` owns its own connection and identity (its own `Controlserver`,
+`TaskController`, MAVLink encoder, and per-drone telemetry), so you can fly
+several drones from one host concurrently:
+
+```python
+import threading
+from pyhulax import DroneAPI
+
+def fly(ip, drone_id):
+    drone = DroneAPI(drone_id=drone_id)   # pin identity for multi-drone
+    drone.connect(ip)
+    drone.takeoff(height_cm=100)
+    drone.hover(5)
+    drone.land()
+    drone.disconnect()
+
+threads = [
+    threading.Thread(target=fly, args=("192.168.1.58", 1)),
+    threading.Thread(target=fly, args=("192.168.1.59", 2)),
+]
+for t in threads: t.start()
+for t in threads: t.join()
+```
+
+### How identity is resolved (the multi-drone takeoff fix)
+
+The drone only accepts flight commands (e.g. takeoff) from the ground-station
+identity it expects. On connect the SDK now:
+
+1. **Detects the local interface that routes to the drone**
+   (`socket.connect((drone_ip, 1)); getsockname()`), then binds the TCP and UDP
+   sockets to that source IP. This is essential on a **multi-homed host** (e.g.
+   the drone's WiFi plus another interface on the same subnet) where the default
+   route would otherwise egress from the wrong NIC and the drone would never
+   stream telemetry or accept commands.
+2. **Derives `bind_client` from that interface's last octet** and stamps every
+   command/heartbeat with the identity the drone expects
+   (`src_system=255, src_component=bind_client`), matching the official app.
+3. **Enters control mode after connect** (`PLANE_COMMAND cmd=10`) so the drone
+   accepts `FORMATION_CMD` (takeoff/hover/land).
+
+All of this is automatic — nothing to configure for the common case.
+
+## Demo
+
+A self-contained takeoff / hover / land demo for one and two drones lives at
+`examples/takeoff_hover_land_demo.py` (it loads the in-repo `pyhulax`, not an
+installed copy):
+
+```bash
+# Single drone
+python examples/takeoff_hover_land_demo.py one --ips 192.168.1.58 --ids 1
+
+# Two drones, flying concurrently
+python examples/takeoff_hover_land_demo.py two \
+    --ips 192.168.1.58 192.168.1.59 --ids 1 2
+
+# Validate wiring without any hardware (no connect/flight)
+python examples/takeoff_hover_land_demo.py two --check
+```
+
+Useful flags: `--height` (takeoff/hover height in cm), `--hover` (seconds),
+`--connect-timeout` (seconds to wait for the drone's heartbeat).
+
 Configured defaults:
 
 ```python
