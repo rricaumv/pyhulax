@@ -341,6 +341,31 @@ class TaskController:
             "drone_id": self._drone_id,
         }
 
+    def send_app_heartbeat_from_status(self, user_mode: int = 2, dest=None) -> bool:
+        """Send APP_HEARTBEAT *from* the status socket (bound to udp_status_port).
+
+        The drone advertises and streams over UDP, and these protocols commonly
+        key on / reply to the app's status port. Sending the heartbeat from the
+        same socket we listen on (rather than an ephemeral send port) makes the
+        app's source port the one the drone expects, and ensures any reply lands
+        on the socket we're already receiving from.
+        """
+        sock = getattr(self, "udp_recive_socket", None)
+        if sock is None:
+            return False
+        if dest is None:
+            dest = (self.server_ip, self._config.network.udp_command_port)
+        try:
+            mav = mavlink.MAVLink(
+                None, src_system=255, src_component=config.bind_client
+            )
+            msg = mavlink.MAVLink_app_heartbeat_message(user_mode)
+            buf = msg.pack(mav)
+            sock.sendto(buf, dest)
+            return True
+        except Exception:
+            return False
+
     def send_app_heartbeat_tcp(self, user_mode: int = 2) -> bool:
         """Send an APP_HEARTBEAT over the established TCP command connection.
 

@@ -212,22 +212,30 @@ class Controlserver:
         while time.time() < deadline:
             now = time.time()
             if now >= next_unicast:
-                # Nudge the drone on every available channel: UDP unicast to the
-                # command port, UDP unicast back to the exact address a beacon
-                # arrived from, and the established TCP connection (in addition
-                # to the UDP broadcast thread already running).
-                try:
-                    self._taskcontroller.send_app_heartbeat(2)  # 2 = Program mode
-                except Exception:
-                    pass
-                peer = getattr(self._taskcontroller, "_udp_peer", None)
+                # Nudge the drone on every available channel. The key variant
+                # sends APP_HEARTBEAT *from* the status socket (udp_status_port)
+                # so the drone sees the app's expected source port and any reply
+                # lands on the socket we listen on. We aim it at the command
+                # port, the status port, and the exact address a beacon arrived
+                # from. Ephemeral-port unicast/broadcast and TCP are fallbacks.
+                tc = self._taskcontroller
+                status_port = self._config.network.udp_status_port
+                cmd_port = self._config.network.udp_command_port
+                peer = getattr(tc, "_udp_peer", None)
+                dests = [(server_ip, cmd_port), (server_ip, status_port)]
                 if peer is not None:
+                    dests.append(peer)
+                for dest in dests:
                     try:
-                        self._taskcontroller.send_app_heartbeat(2, dest=peer)
+                        tc.send_app_heartbeat_from_status(2, dest=dest)
                     except Exception:
                         pass
                 try:
-                    self._taskcontroller.send_app_heartbeat_tcp(2)
+                    tc.send_app_heartbeat(2)  # ephemeral-port unicast fallback
+                except Exception:
+                    pass
+                try:
+                    tc.send_app_heartbeat_tcp(2)  # TCP fallback (usually closed)
                 except Exception:
                     pass
                 next_unicast = now + 1.0
