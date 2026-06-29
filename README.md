@@ -76,13 +76,10 @@ identity it expects. On connect the SDK now:
 
 1. **Detects the local interface that routes to the drone**
    (`socket.connect((drone_ip, 1)); getsockname()`), then binds the TCP and UDP
-   sockets to that source IP. This is essential on a **multi-homed host** (e.g.
-   the drone's WiFi plus another interface on the same subnet) where the default
-   route would otherwise egress from the wrong NIC and the drone would never
-   stream telemetry or accept commands.
+   sockets to that source IP. 
 2. **Derives `bind_client` from that interface's last octet** and stamps every
    command/heartbeat with the identity the drone expects
-   (`src_system=255, src_component=bind_client`), matching the official app.
+   (`src_system=255, src_component=bind_client`).
 3. **Enters control mode after connect** (`PLANE_COMMAND cmd=10`) so the drone
    accepts `FORMATION_CMD` (takeoff/hover/land).
 
