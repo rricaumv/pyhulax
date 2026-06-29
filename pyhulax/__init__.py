@@ -263,7 +263,7 @@ class DroneAPI:
 
         Args:
             ip: Drone IP address. Uses the configured default if None.
-            timeout: Connection timeout in seconds (unused currently).
+            timeout: Seconds to wait for the drone's first heartbeat before failing.
 
         Raises:
             DroneConnectionError: If connection fails.
@@ -272,6 +272,7 @@ class DroneAPI:
             ip,
             enable_file_logging=self._enable_file_logging,
             log_dir=self._file_log_dir,
+            connect_timeout=timeout,
         )
         if not result:
             raise DroneConnectionError("Failed to connect to drone", ip=ip)
@@ -326,7 +327,7 @@ class DroneAPI:
 
         Args:
             ip: Drone IP address. Uses the configured default if None.
-            timeout: Connection timeout in seconds (unused currently).
+            timeout: Seconds to wait for the drone's first heartbeat before failing.
             verbose: Print diagnostic messages.
 
         Returns:
@@ -347,6 +348,7 @@ class DroneAPI:
                 ip,
                 enable_file_logging=self._enable_file_logging,
                 log_dir=self._file_log_dir,
+                connect_timeout=timeout,
             )
 
             if result:
