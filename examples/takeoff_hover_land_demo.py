@@ -53,7 +53,7 @@ import time  # noqa: E402
 
 from pyhulax import DroneAPI, DroneConfig, NetworkConfig, LEDConfig  # noqa: E402
 from pyhulax.core import LEDMode  # noqa: E402
-from pyhulax.core.exceptions import DroneError  # noqa: E402
+from pyhulax.core.exceptions import DroneError, DroneConnectionError  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -77,6 +77,7 @@ def takeoff_hover_land(
     ip: str,
     height_cm: int,
     hover_seconds: float,
+    connect_timeout: float = 8.0,
 ) -> None:
     """Run a single drone through connect -> takeoff -> hover -> land."""
     led = LEDConfig(r=0, g=255, b=0, mode=LEDMode.SOLID)
@@ -84,8 +85,16 @@ def takeoff_hover_land(
     def log(msg: str) -> None:
         print(f"[{label}] {msg}", flush=True)
 
-    log(f"connecting to {ip} ...")
-    drone.connect(ip)
+    log(f"connecting to {ip} (timeout {connect_timeout:.0f}s) ...")
+    try:
+        drone.connect(ip, timeout=connect_timeout)
+    except DroneConnectionError as exc:
+        log(f"CONNECT FAILED: {exc}")
+        log("troubleshooting:")
+        log(f"  1. Confirm this machine is on the drone's WiFi and can reach {ip}")
+        log("  2. Confirm the drone is powered on and finished booting")
+        log("  3. Try a longer --connect-timeout (e.g. 15)")
+        raise
     try:
         log(f"connected (drone_id={drone.get_drone_id()}), battery={_safe_battery(drone)}%")
 
@@ -120,8 +129,22 @@ def _safe_battery(drone: DroneAPI) -> int | str:
 # --------------------------------------------------------------------------- #
 # Demos
 # --------------------------------------------------------------------------- #
-def demo_one(ip: str, drone_id: int | None, height_cm: int, hover_seconds: float) -> None:
+def _warn_if_zero_id(ids: list[int]) -> None:
+    if any(i == 0 for i in ids):
+        print("NOTE: drone_id 0 is unusual - hula aircraft are typically id>=1, "
+              "and the firmware may ignore commands addressed to plane_id 0. "
+              "Pass --ids with the real drone id(s) for actual flight.")
+
+
+def demo_one(
+    ip: str,
+    drone_id: int | None,
+    height_cm: int,
+    hover_seconds: float,
+    connect_timeout: float,
+) -> None:
     print("=== Single-drone demo ===")
+    _warn_if_zero_id([drone_id] if drone_id is not None else [])
     drone = build_drone(ip, drone_id)
     takeoff_hover_land(
         drone,
@@ -129,6 +152,7 @@ def demo_one(ip: str, drone_id: int | None, height_cm: int, hover_seconds: float
         ip=ip,
         height_cm=height_cm,
         hover_seconds=hover_seconds,
+        connect_timeout=connect_timeout,
     )
     print("=== Single-drone demo complete ===")
 
@@ -138,8 +162,10 @@ def demo_two(
     ids: list[int],
     height_cm: int,
     hover_seconds: float,
+    connect_timeout: float,
 ) -> None:
     print("=== Two-drone demo (concurrent) ===")
+    _warn_if_zero_id(ids)
     drones = [build_drone(ip, did) for ip, did in zip(ips, ids)]
 
     errors: dict[str, BaseException] = {}
@@ -153,6 +179,7 @@ def demo_two(
                 ip=ip,
                 height_cm=height_cm,
                 hover_seconds=hover_seconds,
+                connect_timeout=connect_timeout,
             )
         except BaseException as exc:  # noqa: BLE001 - surface any failure per-thread
             errors[label] = exc
@@ -210,6 +237,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="Takeoff/hover height in cm (default 100)")
     parser.add_argument("--hover", type=float, default=5.0,
                         help="Hover duration in seconds (default 5)")
+    parser.add_argument("--connect-timeout", type=float, default=8.0,
+                        help="Seconds to wait for each drone's heartbeat (default 8)")
     parser.add_argument("--check", action="store_true",
                         help="Validate wiring only; do not connect or fly")
     args = parser.parse_args(argv)
@@ -231,9 +260,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.mode == "one":
-        demo_one(ips[0], ids[0], args.height, args.hover)
+        demo_one(ips[0], ids[0], args.height, args.hover, args.connect_timeout)
     else:
-        demo_two(ips, ids, args.height, args.hover)
+        demo_two(ips, ids, args.height, args.hover, args.connect_timeout)
 
 
 if __name__ == "__main__":

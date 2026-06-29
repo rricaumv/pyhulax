@@ -145,7 +145,13 @@ class Controlserver:
 
     # =============================================System Config======================================================================#
 
-    def connect(self, server_ip, enable_file_logging: bool = True, log_dir: str = "logs"):
+    def connect(
+        self,
+        server_ip,
+        enable_file_logging: bool = True,
+        log_dir: str = "logs",
+        connect_timeout: float | None = None,
+    ):
         self._connect_status = 1
         if server_ip is None:
             server_ip = self._config.network.drone_ip
@@ -159,17 +165,41 @@ class Controlserver:
             drone_id=self._drone_id,
         )
         print(f"connect to {server_ip}")
-        # data = self._taskcontroller._wait_state(SysState.P_State_GetHeartbeat, 5)
-        time.sleep(3)
-        data = self._get_plane_data("heartbeat")
-        if data == None:
-            print("connect error")
+
+        # Start broadcasting APP_HEARTBEAT before waiting. Many hula drones only
+        # begin streaming their own REPORT_STATS/heartbeat once the ground
+        # station announces itself, so sending this first maximises the chance
+        # of receiving telemetry during the connect window.
+        self._taskcontroller.udp_heartbeat_send_thread()
+
+        # Poll for the drone's heartbeat instead of a single fixed-delay check.
+        # Slow links/drones get the full timeout; fast ones return as soon as
+        # the first heartbeat lands.
+        if connect_timeout is None:
+            connect_timeout = max(5.0, self._config.timeouts.tcp_connect_timeout_sec)
+        deadline = time.time() + connect_timeout
+        data = None
+        while time.time() < deadline:
+            data = self._get_plane_data("heartbeat")
+            if data is not None:
+                break
+            time.sleep(0.2)
+
+        if data is None:
+            print(
+                f"connect error: no heartbeat from {server_ip} within "
+                f"{connect_timeout:.0f}s"
+            )
+            self._connect_status = 0
+            try:
+                self._taskcontroller.stop_all_task()
+            except Exception:
+                pass
             return False  # TODO : RESTORE
         print("connect wifi")
         self._taskcontroller.create_task(
             UserTask.S_Fly_Plane_time, {"plane_id": self._resolve_command_id()}
         )
-        self._taskcontroller.udp_heartbeat_send_thread()
         return True
 
     def disconnect(self):
