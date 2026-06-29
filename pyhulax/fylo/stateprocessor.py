@@ -222,9 +222,25 @@ class BROADCAST_PLANE_STATUS(StateProcessor):
 class PLANE_STATUS(StateProcessor):
     mavlink_msg_id = 231
 
+    # Track which drones we've already logged so each is printed once (not once
+    # globally). Shared across the per-connection analyzer threads.
+    _seen_plane_ids: set = set()
+
     def get_state(self):
-        if config.drone_id == None:
-            config.drone_id = self._msg.plane_id
+        plane_id = getattr(self._msg, "plane_id", None)
+
+        # Store the latest status per drone so each connection's status is
+        # retrievable, instead of being gated behind a single global id.
+        if plane_id is not None:
+            _datacenter.set_data("Plane", "plane_status", self._msg, plane_id)
+
+        # Legacy single-drone global, kept for backward compatibility.
+        if config.drone_id is None and plane_id is not None:
+            config.drone_id = plane_id
+
+        # Log once per distinct drone rather than once for the whole process.
+        if plane_id is not None and plane_id not in PLANE_STATUS._seen_plane_ids:
+            PLANE_STATUS._seen_plane_ids.add(plane_id)
             print(self._msg)
 
         return None

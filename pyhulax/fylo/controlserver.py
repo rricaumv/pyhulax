@@ -143,6 +143,14 @@ class Controlserver:
         """Public accessor for per-drone telemetry (e.g. flight_data, heartbeat)."""
         return self._get_plane_data(datatype)
 
+    def get_plane_status(self):
+        """Return this connection's drone PLANE_STATUS (msg 231), or None.
+
+        Stored per drone id, so each Controlserver returns its own drone's
+        status rather than a single shared global.
+        """
+        return self._get_plane_data("plane_status")
+
     # =============================================Drone Discovery======================================================================#
 
     def _local_ip_to_reach(self, drone_ip: str) -> str | None:
