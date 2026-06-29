@@ -143,6 +143,61 @@ class Controlserver:
         """Public accessor for per-drone telemetry (e.g. flight_data, heartbeat)."""
         return self._get_plane_data(datatype)
 
+    # =============================================Drone Discovery======================================================================#
+
+    def _discover_bind_client(self, timeout: float = 3.0) -> int | None:
+        """Listen for the drone's broadcast beacon (msg 232) to learn the
+        bind_client it expects, before opening the main connection.
+
+        Done up front so a multi-homed host can bind its sockets to the right
+        local interface (the drone streams telemetry over a TCP connection from
+        the client IP it expects).
+        """
+        from . import mavlink
+
+        port = self._config.network.udp_status_port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", port))
+        except OSError:
+            sock.close()
+            return None
+        sock.settimeout(0.3)
+        deadline = time.time() + timeout
+        result = None
+        try:
+            while time.time() < deadline:
+                try:
+                    data, _peer = sock.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    msg = mavlink.MAVLink(None).decode(bytearray(data))
+                except Exception:
+                    continue
+                if msg.get_msg_id() == 232:
+                    result = getattr(msg, "bind_client", None)
+                    if result is not None:
+                        break
+        finally:
+            sock.close()
+        return result
+
+    def _local_ip_for_octet(self, subnet: str, octet: int) -> str | None:
+        """Return the local IP `subnet.octet` if this host actually owns it."""
+        target = f"{subnet}.{octet}"
+        try:
+            for _, addrs in psutil.net_if_addrs().items():
+                for addr in addrs:
+                    if addr.family == socket.AF_INET and addr.address == target:
+                        return target
+        except Exception:
+            pass
+        return None
+
     # =============================================System Config======================================================================#
 
     def connect(
@@ -155,96 +210,61 @@ class Controlserver:
         self._connect_status = 1
         if server_ip is None:
             server_ip = self._config.network.drone_ip
-
         self._server_ip = server_ip
+
+        if connect_timeout is None:
+            connect_timeout = max(8.0, self._config.timeouts.tcp_connect_timeout_sec)
+
+        # Pre-discover which client the drone expects from its broadcast beacon
+        # (msg 232). The drone streams telemetry over a TCP connection from that
+        # client's IP, so on a multi-homed host we must originate our sockets
+        # from the matching local interface (the default route may use a
+        # different NIC on the same subnet, which the drone ignores).
+        subnet = ".".join(server_ip.split(".")[:-1])
+        discovered_bc = self._discover_bind_client(timeout=min(3.0, connect_timeout))
+        source_ip = None
+        if discovered_bc not in (None, 255):
+            fylo_config.drone_reported_bind_client = discovered_bc
+            cand = self._local_ip_for_octet(subnet, discovered_bc)
+            if cand is not None:
+                source_ip = cand
+                fylo_config.bind_client = discovered_bc
+                print(
+                    f"drone expects client {discovered_bc}; binding to local {source_ip}"
+                )
+            else:
+                print(
+                    f"note: drone expects client {discovered_bc} (IP {subnet}.{discovered_bc}) "
+                    f"but this host has no such interface; using default routing "
+                    f"(bind_client={fylo_config.bind_client})."
+                )
+
         self._taskcontroller = TaskController(
             server_ip,
             runtime_config=self._config,
             enable_file_logging=enable_file_logging,
             log_dir=log_dir,
             drone_id=self._drone_id,
+            source_ip=source_ip,
         )
         print(f"connect to {server_ip}")
 
-        if connect_timeout is None:
-            connect_timeout = max(8.0, self._config.timeouts.tcp_connect_timeout_sec)
-        deadline = time.time() + connect_timeout
-
-        # The drone broadcasts BROADCAST_PLANE_STATUS (msg 232) as a discovery
-        # beacon and only starts streaming its REPORT_STATS heartbeat once the
-        # ground station announces itself. The beacon carries the bind_client
-        # the drone expects us to use as our source component, so wait briefly
-        # for it before announcing.
-        bind_deadline = min(deadline, time.time() + 3.0)
-        while (
-            time.time() < bind_deadline
-            and fylo_config.drone_reported_bind_client in (None, 255)
-        ):
-            time.sleep(0.1)
-
-        # bind_client identifies THIS ground station (the last octet of the
-        # local IP on the drone network, per the C# app). Use the locally
-        # detected value; only fall back to the drone-advertised id if local
-        # detection failed. The drone advertising a *different* id usually means
-        # it is still bound to another client (e.g. the phone app), in which
-        # case it will not stream to us until that binding is released.
-        drone_bc = fylo_config.drone_reported_bind_client
-        local_bc = fylo_config.bind_client
-        if local_bc in (None, 255) and drone_bc not in (None, 255):
-            fylo_config.bind_client = drone_bc
-        elif drone_bc not in (None, 255) and drone_bc != local_bc:
-            print(
-                f"note: drone advertises bind_client={drone_bc} but this host is "
-                f"{local_bc}. The drone may still be bound to another client "
-                f"(e.g. the phone app, likely at .{drone_bc}). Close that app and "
-                f"power-cycle the drone if it won't bind to this host."
-            )
-
-        # Announce ourselves (APP_HEARTBEAT broadcast) so the drone binds to us
-        # and begins streaming telemetry.
+        # Announce via APP_HEARTBEAT (broadcast + unicast to the command port)
+        # so the drone keeps streaming. Telemetry itself arrives over the TCP
+        # connection established above.
         self._taskcontroller.udp_heartbeat_send_thread()
-        print(
-            f"announcing to {server_ip} as bind_client={fylo_config.bind_client} "
-            f"(drone advertised {fylo_config.drone_reported_bind_client})"
-        )
 
-        # Poll for the drone's heartbeat. It is stored at the legacy id=0 slot by
-        # the shared state processor (and mirrored per-drone), so this reads the
-        # same slot the original single-drone code did. Alongside the broadcast
-        # announce, also nudge the drone directly with a unicast APP_HEARTBEAT
-        # each second in case subnet broadcast is filtered by the host firewall.
+        deadline = time.time() + connect_timeout
         data = None
-        next_unicast = 0.0
+        next_hb = 0.0
         while time.time() < deadline:
             now = time.time()
-            if now >= next_unicast:
-                # Nudge the drone on every available channel. The key variant
-                # sends APP_HEARTBEAT *from* the status socket (udp_status_port)
-                # so the drone sees the app's expected source port and any reply
-                # lands on the socket we listen on. We aim it at the command
-                # port, the status port, and the exact address a beacon arrived
-                # from. Ephemeral-port unicast/broadcast and TCP are fallbacks.
-                tc = self._taskcontroller
-                status_port = self._config.network.udp_status_port
-                cmd_port = self._config.network.udp_command_port
-                peer = getattr(tc, "_udp_peer", None)
-                dests = [(server_ip, cmd_port), (server_ip, status_port)]
-                if peer is not None:
-                    dests.append(peer)
-                for dest in dests:
-                    try:
-                        tc.send_app_heartbeat_from_status(2, dest=dest)
-                    except Exception:
-                        pass
+            if now >= next_hb:
                 try:
-                    tc.send_app_heartbeat(2)  # ephemeral-port unicast fallback
+                    self._taskcontroller.send_app_heartbeat(2)  # unicast, Program mode
                 except Exception:
                     pass
-                try:
-                    tc.send_app_heartbeat_tcp(2)  # TCP fallback (usually closed)
-                except Exception:
-                    pass
-                next_unicast = now + 1.0
+                next_hb = now + 1.0
             data = self._get_plane_data("heartbeat")
             if data is not None:
                 break
@@ -254,6 +274,7 @@ class Controlserver:
             diag = self._taskcontroller.connection_diagnostics()
             diag["bind_client"] = fylo_config.bind_client
             diag["drone_reported_bind_client"] = fylo_config.drone_reported_bind_client
+            diag["source_ip"] = source_ip
             print(
                 f"connect error: no heartbeat from {server_ip} within "
                 f"{connect_timeout:.0f}s"
@@ -262,20 +283,16 @@ class Controlserver:
             if not diag["tcp_connected"]:
                 print("  -> TCP never connected: drone unreachable at this IP/port "
                       f"(check WiFi / firewall to {server_ip}:{self._config.network.tcp_port}).")
+            elif diag["tcp_rx_bytes"] == 0 and diag["rx_bytes"] > 0:
+                print("  -> Beacons arrived (UDP) but the TCP telemetry stream is silent. "
+                      "The drone streams telemetry over TCP only to the client IP it "
+                      f"expects ({subnet}.{discovered_bc}); if this host has that IP but "
+                      "we still got nothing, another client may hold the binding (close "
+                      "the phone app / power-cycle the drone).")
             elif diag["rx_bytes"] == 0:
-                print("  -> TCP connected but the drone sent no data at all.")
-            elif diag["rx_msg_count"] == 0:
-                print("  -> Bytes arrived but no MAVLink message parsed: protocol/framing "
-                      "mismatch.")
-            elif set(diag["rx_msg_ids"]) <= {232}:
-                print("  -> Only discovery beacons (msg 232) arrived: the drone did not "
-                      "accept our APP_HEARTBEAT, so it never started streaming telemetry. "
-                      "This is usually a bind_client mismatch (compare bind_client vs "
-                      "drone_reported_bind_client above) or the broadcast not reaching the "
-                      f"drone (check that UDP broadcast to {server_ip.rsplit('.', 1)[0]}.255"
-                      f":{self._config.network.udp_command_port} is allowed).")
+                print("  -> Connected but no data arrived on any channel.")
             else:
-                print("  -> Messages arrived but no heartbeat (msg 207) among them: "
+                print("  -> Data arrived but no heartbeat (msg 207): "
                       f"saw msg ids {list(diag['rx_msg_ids'])}.")
             self._connect_status = 0
             try:

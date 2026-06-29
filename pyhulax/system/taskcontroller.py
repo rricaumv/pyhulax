@@ -30,6 +30,7 @@ class TaskController:
         enable_file_logging: bool = True,
         log_dir: str = "logs",
         drone_id: int | None = None,
+        source_ip: str | None = None,
     ):
         # self._communication_controller = communication_controller
         # self._buffer = self._communication_controller.get_buffer()
@@ -42,6 +43,13 @@ class TaskController:
         self._drone_id = drone_id
         self._plane_id = drone_id if drone_id is not None else 1
         self._token = None
+
+        # Local IP to bind outbound sockets to. On a multi-homed host (more than
+        # one interface on the drone's subnet) the default route may egress from
+        # the wrong interface, so the drone never streams over the TCP
+        # connection / never sees the client IP it expects. When set, the TCP
+        # connection and UDP send sockets are bound to this address.
+        self._source_ip = source_ip
 
         # Lightweight connection diagnostics so a failed connect() can report
         # exactly where the pipeline stalled (TCP connect / bytes / parsing).
@@ -166,6 +174,11 @@ class TaskController:
         try:
             self.udp_command_socket = socket(AF_INET, SOCK_DGRAM)
             self.udp_command_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+            if self._source_ip:
+                try:
+                    self.udp_command_socket.bind((self._source_ip, 0))
+                except OSError as e:
+                    print(f"warning: could not bind UDP command socket to {self._source_ip}: {e}")
             print(
                 f"UDP command socket initialized for "
                 f"{self.server_ip}:{self._config.network.udp_command_port}"
@@ -487,6 +500,14 @@ class TaskController:
         client_address = (host, port)
         self.server_socket = socket(AF_INET, SOCK_STREAM)
         try:
+            # Bind to the chosen local interface so the drone sees (and streams
+            # back over) a connection from the client IP it expects. Critical on
+            # multi-homed hosts where the default route uses the wrong NIC.
+            if self._source_ip:
+                try:
+                    self.server_socket.bind((self._source_ip, 0))
+                except OSError as e:
+                    print(f"warning: could not bind TCP to {self._source_ip}: {e}")
             self.server_socket.settimeout(self._config.timeouts.tcp_connect_timeout_sec)
             self.server_socket.connect(client_address)
             self.server_socket.settimeout(
@@ -777,6 +798,11 @@ class TaskController:
         self.udp_socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         # this is the important part for non-root broadcast:
         self.udp_socket.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
+        if self._source_ip:
+            try:
+                self.udp_socket.bind((self._source_ip, 0))
+            except OSError as e:
+                print(f"warning: could not bind broadcast socket to {self._source_ip}: {e}")
 
         try:
             while self._controller_status:
