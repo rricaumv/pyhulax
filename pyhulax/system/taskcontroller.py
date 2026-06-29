@@ -48,6 +48,9 @@ class TaskController:
         self._tcp_connected = False
         self._tcp_error: str | None = None
         self._rx_bytes = 0
+        self._tcp_rx_bytes = 0
+        self._udp_rx_bytes = 0
+        self._udp_peer = None
         self._rx_msg_count = 0
         self._rx_msg_ids: dict[int, int] = {}
 
@@ -328,10 +331,34 @@ class TaskController:
             "tcp_connected": self._tcp_connected,
             "tcp_error": self._tcp_error,
             "rx_bytes": self._rx_bytes,
+            "tcp_rx_bytes": self._tcp_rx_bytes,
+            "udp_rx_bytes": self._udp_rx_bytes,
+            "udp_peer": self._udp_peer,
             "rx_msg_count": self._rx_msg_count,
             "rx_msg_ids": dict(sorted(self._rx_msg_ids.items())),
             "drone_id": self._drone_id,
         }
+
+    def send_app_heartbeat_tcp(self, user_mode: int = 2) -> bool:
+        """Send an APP_HEARTBEAT over the established TCP command connection.
+
+        Some drone firmware expects the ground-station heartbeat on the same
+        TCP channel it streams over, not only the UDP broadcast/unicast path.
+        """
+        sock = getattr(self, "server_socket", None)
+        if sock is None or not self._tcp_connected:
+            return False
+        try:
+            mav = mavlink.MAVLink(
+                None, src_system=255, src_component=config.bind_client
+            )
+            msg = mavlink.MAVLink_app_heartbeat_message(user_mode)
+            buf = msg.pack(mav)
+            sock.sendall(buf)
+            return True
+        except Exception as e:
+            print(f"Failed to send app heartbeat over TCP: {e}")
+            return False
 
     def get_drone_id(self):
         """Return the drone id bound to this connection, if known.
@@ -442,6 +469,7 @@ class TaskController:
                     if not recv_data:
                         break  # Connection closed
                     self._rx_bytes += len(recv_data)
+                    self._tcp_rx_bytes += len(recv_data)
                     self._socket_buffer.set_data(recv_data)
                 except timeout:
                     continue  # Check _controller_status and loop again
@@ -487,8 +515,10 @@ class TaskController:
 
         while self._controller_status:
             try:
-                recv_data = self.udp_recive_socket.recv(2048)
+                recv_data, peer = self.udp_recive_socket.recvfrom(2048)
                 self._rx_bytes += len(recv_data)
+                self._udp_rx_bytes += len(recv_data)
+                self._udp_peer = peer
                 self._socket_buffer.set_data(recv_data)
             except timeout:
                 continue  # Check _controller_status and loop again
