@@ -63,6 +63,8 @@ class TaskController:
         self._rx_msg_ids: dict[int, int] = {}
         # Last FORMATION_CMD_ACK (msg 209) seen: (cmd, result, token).
         self._last_formation_ack = None
+        # Last PLANE_ACK (msg 228) seen: (cmd, result, type).
+        self._last_plane_ack = None
 
         # Per-connection MAVLink encoders. Each TaskController owns its own
         # encoder so the sequence counter and source component are not shared
@@ -359,6 +361,9 @@ class TaskController:
             "rx_msg_count": self._rx_msg_count,
             "rx_msg_ids": dict(sorted(self._rx_msg_ids.items())),
             "last_formation_ack": self._last_formation_ack,
+            "last_plane_ack": self._last_plane_ack,
+            "bind_client": config.bind_client,
+            "source_ip": self._source_ip,
             "drone_id": self._drone_id,
         }
 
@@ -612,6 +617,12 @@ class TaskController:
                         getattr(msg, "cmd", None),
                         getattr(msg, "result", None),
                         getattr(msg, "token", None),
+                    )
+                elif _mid == 228:  # PLANE_ACK
+                    self._last_plane_ack = (
+                        getattr(msg, "cmd", None),
+                        getattr(msg, "result", None),
+                        getattr(msg, "type", None),
                     )
             except Exception:
                 pass

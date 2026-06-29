@@ -307,6 +307,14 @@ class Controlserver:
         self._taskcontroller.create_task(
             UserTask.S_Fly_Plane_time, {"plane_id": self._resolve_command_id()}
         )
+        # The official app sends PLANE_COMMAND cmd=10 right after connecting
+        # (the drone ACKs it) before any flight command. It appears to put the
+        # drone into the control/program mode where it accepts FORMATION_CMD, so
+        # replicate it here.
+        try:
+            self.Plane_Linux_cmd(cmd=10, ack=1, mode=0, data=0, reserve=0)
+        except Exception as exc:
+            print(f"warning: enter-control (PLANE_COMMAND cmd=10) failed: {exc}")
         return True
 
     def disconnect(self):
