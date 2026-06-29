@@ -65,6 +65,27 @@ def test_legacy_global_fallback_preserved():
     assert _decode(cp.get_buf()).start_id == 42
 
 
+def test_command_identity_matches_official_app():
+    """Commands must go out as src_system=255, src_component=bind_client.
+
+    The drone only accepts commands from the ground-station identity it expects
+    (the official app uses sys=255 and component=bind_client); a mismatch makes
+    the drone silently ignore the command.
+    """
+    fylo_config.bind_client = 94
+    # Encoder created the way TaskController creates it.
+    mav = mavlink.MAVLink(None, src_system=255, src_component=2)
+    cmd = Command(
+        SysCommand.S_Fly_Takeoff,
+        {"plane_id": 1, "token": 2, "height": 100, "led": 0, "flags": 0},
+    )
+    cp = CommandProcessorFactory.get_command_processor(cmd, mav, drone_id=1)
+    msg = _decode(cp.get_buf())
+    assert msg.cmd == 23  # ONE_KEY_TAKEOFF
+    assert msg.get_header().srcSystem == 255
+    assert msg.get_header().srcComponent == 94
+
+
 def test_datacenter_telemetry_isolated_per_drone():
     """Telemetry stored under distinct ids does not cross-contaminate."""
     dc = DataCenter()

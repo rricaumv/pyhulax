@@ -68,14 +68,19 @@ class TaskController:
         # encoder so the sequence counter and source component are not shared
         # across drones (the old module-level encoder in commandprocessor was
         # mutated by every connection).
+        #
+        # The drone only accepts commands from the ground station identity it
+        # expects: src_system=255 and src_component=bind_client (matching the
+        # official app). src_component starts at 2 and CommandProcessor flips it
+        # to config.bind_client on first use.
         self._mavlink = mavlink.MAVLink(
             None,
-            src_system=system.mavlink_system_id,
+            src_system=255,
             src_component=system.mavlink_component_id,
         )
         self._mavlink_file = mavlink.MAVLink(
             None,
-            src_system=system.mavlink_system_id,
+            src_system=255,
             src_component=system.mavlink_component_file_id,
         )
         # self._dancefileanalyzer = dancefileanalyzer.DanceFileAnalyzer(
