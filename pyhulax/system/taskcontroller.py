@@ -174,8 +174,8 @@ class TaskController:
             print(f"Failed to initialize UDP command socket: {e}")
             self.udp_command_socket = None
 
-    def send_app_heartbeat(self, user_mode: int = 1) -> bool:
-        """Send APP_HEARTBEAT message via UDP port 8085.
+    def send_app_heartbeat(self, user_mode: int = 1, dest=None) -> bool:
+        """Send APP_HEARTBEAT message via UDP.
 
         The drone requires periodic heartbeats to accept certain control modes.
         user_mode determines the app's current control mode:
@@ -187,6 +187,9 @@ class TaskController:
 
         Args:
             user_mode: App mode (0-4). Default 1 for manual flight.
+            dest: Optional (ip, port) to send to. Defaults to the drone IP on
+                the configured command port. During discovery this is used to
+                reply to the exact address a beacon arrived from.
 
         Returns:
             True if message was sent successfully.
@@ -198,6 +201,9 @@ class TaskController:
         if self.udp_command_socket is None:
             print("UDP command socket not available for heartbeat")
             return False
+
+        if dest is None:
+            dest = (self.server_ip, self._config.network.udp_command_port)
 
         try:
             # Create MAVLink instance for encoding
@@ -212,11 +218,7 @@ class TaskController:
             msg = mavlink.MAVLink_app_heartbeat_message(user_mode)
             buf = msg.pack(mav)
 
-            # Send via UDP to port 8085
-            self.udp_command_socket.sendto(
-                buf,
-                (self.server_ip, self._config.network.udp_command_port),
-            )
+            self.udp_command_socket.sendto(buf, dest)
             return True
         except Exception as e:
             print(f"Failed to send app heartbeat: {e}")
@@ -356,8 +358,12 @@ class TaskController:
             buf = msg.pack(mav)
             sock.sendall(buf)
             return True
-        except Exception as e:
-            print(f"Failed to send app heartbeat over TCP: {e}")
+        except OSError:
+            # The drone commonly closes the TCP channel while unbound; that's
+            # expected and informative (the session runs over UDP), so stay
+            # quiet here rather than spamming per-attempt.
+            return False
+        except Exception:
             return False
 
     def get_drone_id(self):

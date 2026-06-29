@@ -212,13 +212,20 @@ class Controlserver:
         while time.time() < deadline:
             now = time.time()
             if now >= next_unicast:
-                # Nudge the drone on every available channel: UDP unicast and
-                # the established TCP connection (in addition to the UDP
-                # broadcast thread already running).
+                # Nudge the drone on every available channel: UDP unicast to the
+                # command port, UDP unicast back to the exact address a beacon
+                # arrived from, and the established TCP connection (in addition
+                # to the UDP broadcast thread already running).
                 try:
                     self._taskcontroller.send_app_heartbeat(2)  # 2 = Program mode
                 except Exception:
                     pass
+                peer = getattr(self._taskcontroller, "_udp_peer", None)
+                if peer is not None:
+                    try:
+                        self._taskcontroller.send_app_heartbeat(2, dest=peer)
+                    except Exception:
+                        pass
                 try:
                     self._taskcontroller.send_app_heartbeat_tcp(2)
                 except Exception:
