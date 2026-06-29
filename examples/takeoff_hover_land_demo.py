@@ -99,7 +99,15 @@ def takeoff_hover_land(
         log(f"connected (drone_id={drone.get_drone_id()}), battery={_safe_battery(drone)}%")
 
         log(f"takeoff to {height_cm} cm")
-        drone.takeoff(height_cm=height_cm, led=led)
+        result = drone.takeoff(height_cm=height_cm, led=led)
+        # Surface what the drone actually replied, to diagnose a stuck takeoff.
+        try:
+            tc = drone._server._taskcontroller  # noqa: SLF001 - demo introspection
+            diag = tc.connection_diagnostics()
+            log(f"takeoff result={result}; last_formation_ack(cmd,result,token)="
+                f"{diag.get('last_formation_ack')}; rx_msg_ids={list(diag.get('rx_msg_ids', {}))}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"(could not read takeoff diagnostics: {exc})")
 
         log(f"hover for {hover_seconds:.0f}s")
         drone.hover(hover_seconds, led=led)
