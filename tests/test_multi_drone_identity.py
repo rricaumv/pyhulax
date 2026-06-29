@@ -86,6 +86,32 @@ def test_command_identity_matches_official_app():
     assert msg.get_header().srcComponent == 94
 
 
+def test_plane_status_recorded_per_drone():
+    """PLANE_STATUS (msg 231) must be stored/printed per drone, not gated on a
+    single global id (which suppressed every drone after the first)."""
+    from pyhulax.fylo import stateprocessor as sp
+    from pyhulax.system.datacenter import DataCenter
+
+    fylo_config.drone_id = None
+    sp.PLANE_STATUS._seen_plane_ids = set()
+    dc = DataCenter()
+
+    class FakeStatus:
+        def __init__(self, pid):
+            self.plane_id = pid
+            self.capacity = pid
+        def get_msg_id(self):
+            return 231
+
+    for pid in (1, 2, 1, 2):  # repeats must not create duplicates
+        sp.PLANE_STATUS(FakeStatus(pid), sp.MsgType.MavlinkMsg).get_state()
+
+    assert dc.get_data("Plane", "plane_status", 1).plane_id == 1
+    assert dc.get_data("Plane", "plane_status", 2).plane_id == 2
+    # Each distinct drone logged exactly once.
+    assert sp.PLANE_STATUS._seen_plane_ids == {1, 2}
+
+
 def test_datacenter_telemetry_isolated_per_drone():
     """Telemetry stored under distinct ids does not cross-contaminate."""
     dc = DataCenter()
