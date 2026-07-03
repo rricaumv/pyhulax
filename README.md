@@ -111,6 +111,21 @@ Useful flags: `--height` (takeoff/hover height in cm), `--hover` (seconds),
 `--connect-timeout` (seconds to wait for the drone's heartbeat), `--video`
 (stream each drone in its own window; needs `pip install "pyhulax[video]"`).
 
+`examples/swarm_square_demo.py` is a four-drone choreography: the drones start
+at the corners of a 60 cm square, take off, fan out along the diagonals to a
+180 cm square, do a slow yaw wiggle, return, and land — synchronized phase by
+phase, with optional 2x2 video windows mirroring the field layout.
+
+```bash
+# 4 drones, order: bottom-left bottom-right top-left top-right
+python examples/swarm_square_demo.py \
+    --ips 192.168.1.58 192.168.1.70 192.168.1.71 192.168.1.72 \
+    --ids 1 2 3 4 --video
+
+# Print the planned geometry/wiring without hardware
+python examples/swarm_square_demo.py --check
+```
+
 Configured defaults:
 
 ```python
