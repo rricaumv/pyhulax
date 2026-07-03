@@ -2186,7 +2186,11 @@ class DroneAPI:
 
         # Get drone IP and plane_id
         drone_ip = getattr(self._server, "_server_ip", self._config.network.drone_ip)
-        drone_id = self.get_drone_id() or 1
+        # Note: drone_id 0 is a valid id (RTP port 9000); only fall back to 1
+        # when it is genuinely unknown. Using `or 1` would break drone 0.
+        drone_id = self.get_drone_id()
+        if drone_id is None:
+            drone_id = 1
 
         # Create stream with correct drone_id for port calculation
         stream = VideoStream(
@@ -2252,7 +2256,10 @@ class DroneAPI:
             raise NotReady("Not connected to drone")
 
         drone_ip = getattr(self._server, "_server_ip", self._config.network.drone_ip)
-        drone_id = self.get_drone_id() or 1
+        # drone_id 0 is valid (RTP port 9000); only default to 1 when unknown.
+        drone_id = self.get_drone_id()
+        if drone_id is None:
+            drone_id = 1
         return VideoStream(drone_ip=drone_ip, drone_id=drone_id, config=self._config)
 
     # ==================== Media Management ====================
