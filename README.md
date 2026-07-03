@@ -102,12 +102,17 @@ python examples/takeoff_hover_land_demo.py one --ips 192.168.1.58 --ids 1
 python examples/takeoff_hover_land_demo.py two \
     --ips 192.168.1.58 192.168.1.59 --ids 1 2
 
+# Two drones with live video, each in its own window
+python examples/takeoff_hover_land_demo.py two \
+    --ips 192.168.1.58 192.168.1.59 --ids 1 2 --video
+
 # Validate wiring without any hardware (no connect/flight)
 python examples/takeoff_hover_land_demo.py two --check
 ```
 
 Useful flags: `--height` (takeoff/hover height in cm), `--hover` (seconds),
-`--connect-timeout` (seconds to wait for the drone's heartbeat).
+`--connect-timeout` (seconds to wait for the drone's heartbeat), `--video`
+(stream each drone in its own window; needs `pip install "pyhulax[video]"`).
 
 Configured defaults:
 

@@ -19,6 +19,10 @@ Usage:
     python examples/takeoff_hover_land_demo.py two \
         --ips 192.168.100.1 192.168.100.2 --ids 1 2
 
+    # Two drones with live video, each in its own window
+    python examples/takeoff_hover_land_demo.py two \
+        --ips 192.168.100.1 192.168.100.2 --ids 1 2 --video
+
     # Validate wiring without touching any hardware (no connect/flight)
     python examples/takeoff_hover_land_demo.py two --check
 """
@@ -70,6 +74,30 @@ def build_drone(ip: str, drone_id: int | None) -> DroneAPI:
     return DroneAPI(config=config, drone_id=drone_id)
 
 
+def _start_video(drone: DroneAPI, window_name: str, log) -> object | None:
+    """Start this drone's RTP video stream in its own OpenCV window.
+
+    Each drone streams on a distinct RTP port (9000 + drone_id * 2), so the
+    windows/streams don't collide. Returns the VideoStream (to stop later) or
+    None if video isn't available.
+    """
+    try:
+        from pyhulax.video import VideoDisplay
+    except ImportError as exc:
+        log(f"video unavailable - install the extra: pip install 'pyhulax[video]' ({exc})")
+        return None
+    try:
+        drone.set_video_stream(True)          # enable RTP on the drone
+        stream = drone.create_video_stream()  # uses this drone's id -> unique port
+        stream.add_callback(VideoDisplay(window_name=window_name, show_fps=True))
+        stream.start()
+        log(f"video streaming in window '{window_name}'")
+        return stream
+    except Exception as exc:  # noqa: BLE001 - video is best-effort, never block flight
+        log(f"could not start video: {exc}")
+        return None
+
+
 def takeoff_hover_land(
     drone: DroneAPI,
     *,
@@ -78,6 +106,7 @@ def takeoff_hover_land(
     height_cm: int,
     hover_seconds: float,
     connect_timeout: float = 8.0,
+    video: bool = False,
 ) -> None:
     """Run a single drone through connect -> takeoff -> hover -> land."""
     led = LEDConfig(r=0, g=255, b=0, mode=LEDMode.CONSTANT)
@@ -95,8 +124,12 @@ def takeoff_hover_land(
         log("  2. Confirm the drone is powered on and finished booting")
         log("  3. Try a longer --connect-timeout (e.g. 15)")
         raise
+    stream = None
     try:
         log(f"connected (drone_id={drone.get_drone_id()}), battery={_safe_battery(drone)}%")
+
+        if video:
+            stream = _start_video(drone, window_name=label, log=log)
 
         log(f"takeoff to {height_cm} cm")
         result = drone.takeoff(height_cm=height_cm, led=led)
@@ -119,6 +152,12 @@ def takeoff_hover_land(
         drone.land(led=led)
         log("landed")
     finally:
+        # Stop the video stream first so its window/thread is released.
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:  # noqa: BLE001
+                pass
         # Best-effort safety: try to land if we bailed out mid-flight, then
         # always release the connection/threads.
         try:
@@ -153,6 +192,7 @@ def demo_one(
     height_cm: int,
     hover_seconds: float,
     connect_timeout: float,
+    video: bool = False,
 ) -> None:
     print("=== Single-drone demo ===")
     _warn_if_zero_id([drone_id] if drone_id is not None else [])
@@ -164,6 +204,7 @@ def demo_one(
         height_cm=height_cm,
         hover_seconds=hover_seconds,
         connect_timeout=connect_timeout,
+        video=video,
     )
     print("=== Single-drone demo complete ===")
 
@@ -174,6 +215,7 @@ def demo_two(
     height_cm: int,
     hover_seconds: float,
     connect_timeout: float,
+    video: bool = False,
 ) -> None:
     print("=== Two-drone demo (concurrent) ===")
     _warn_if_zero_id(ids)
@@ -191,6 +233,7 @@ def demo_two(
                 height_cm=height_cm,
                 hover_seconds=hover_seconds,
                 connect_timeout=connect_timeout,
+                video=video,
             )
         except BaseException as exc:  # noqa: BLE001 - surface any failure per-thread
             errors[label] = exc
@@ -252,6 +295,9 @@ def main(argv: list[str] | None = None) -> None:
                         help="Seconds to wait for each drone's heartbeat (default 8)")
     parser.add_argument("--check", action="store_true",
                         help="Validate wiring only; do not connect or fly")
+    parser.add_argument("--video", action="store_true",
+                        help="Stream each drone's video in its own window "
+                             "(requires the video extra: pip install 'pyhulax[video]')")
     args = parser.parse_args(argv)
 
     if args.mode == "one":
@@ -271,9 +317,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.mode == "one":
-        demo_one(ips[0], ids[0], args.height, args.hover, args.connect_timeout)
+        demo_one(ips[0], ids[0], args.height, args.hover, args.connect_timeout, args.video)
     else:
-        demo_two(ips, ids, args.height, args.hover, args.connect_timeout)
+        demo_two(ips, ids, args.height, args.hover, args.connect_timeout, args.video)
 
 
 if __name__ == "__main__":
