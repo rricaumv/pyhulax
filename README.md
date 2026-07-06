@@ -113,8 +113,9 @@ Useful flags: `--height` (takeoff/hover height in cm), `--hover` (seconds),
 
 `examples/swarm_square_demo.py` is a four-drone choreography: the drones start
 at the corners of a 60 cm square, take off, fan out along the diagonals to a
-180 cm square, do a slow yaw wiggle, return, and land — synchronized phase by
-phase, with optional 2x2 video windows mirroring the field layout.
+100 cm square, fly one clockwise loop around that square's perimeter, return to
+the 60 cm corners, and land — synchronized phase by phase, with optional 2x2
+video windows mirroring the field layout.
 
 ```bash
 # 4 drones, order: bottom-left bottom-right top-left top-right
