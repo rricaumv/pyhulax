@@ -12,8 +12,9 @@ Four drones start at the corners of a 60 cm x 60 cm square, all facing the same
      (e.g. the bottom-left drone turns to face the bottom-left / south-west).
   5. Each flies straight out along that diagonal until the four drones sit at
      the corners of a 180x180 cm square, then hovers.
-  6. Each slowly rotates 45 deg clockwise, back, 45 deg anticlockwise, and back
-     to facing along the diagonal.
+  6. All four fly clockwise around the perimeter of the 180x180 square, one edge
+     at a time (each drone on a different edge, so no collisions), completing a
+     full loop back to their own starting corner.
   7. All fly back to their original 60x60 corners.
   8. Each rotates back to the original "forward" heading.
   9. All land in their original positions.
@@ -65,15 +66,21 @@ from pyhulax.core.exceptions import DroneError, DroneConnectionError  # noqa: E4
 # out  = rotation (deg) from "forward" to face diagonally outward (+ = CCW/left)
 # grid = (row, col) window cell so the 2x2 video layout mirrors the field.
 # --------------------------------------------------------------------------- #
+# out       = rotation (deg) from "forward" to face diagonally outward (+ = CCW/left)
+# grid      = (row, col) window cell so the 2x2 video layout mirrors the field
+# cw_start  = compass heading (0=N/forward, 90=E, 180=S, 270=W) of the first edge
+#             this corner travels along when going clockwise round the perimeter
 CORNER_ORDER = ["BL", "BR", "TL", "TR"]
 CORNER_META = {
-    "BL": {"name": "bottom-left",  "out": +135, "grid": (1, 0)},  # face SW
-    "BR": {"name": "bottom-right", "out": -135, "grid": (1, 1)},  # face SE
-    "TL": {"name": "top-left",     "out": +45,  "grid": (0, 0)},  # face NW
-    "TR": {"name": "top-right",    "out": -45,  "grid": (0, 1)},  # face NE
+    "BL": {"name": "bottom-left",  "out": +135, "grid": (1, 0), "cw_start": 0},    # face SW; first edge N
+    "BR": {"name": "bottom-right", "out": -135, "grid": (1, 1), "cw_start": 270},  # face SE; first edge W
+    "TL": {"name": "top-left",     "out": +45,  "grid": (0, 0), "cw_start": 90},   # face NW; first edge E
+    "TR": {"name": "top-right",    "out": -45,  "grid": (0, 1), "cw_start": 180},  # face NE; first edge S
 }
 
 LED = LEDConfig(r=0, g=255, b=0, mode=LEDMode.CONSTANT)
+
+_COMPASS = {0: "N", 90: "E", 180: "S", 270: "W"}
 
 
 class _Aborted(Exception):
@@ -103,15 +110,27 @@ class Choreo:
         self._barrier.abort()
 
 
-def _stepped_rotate(drone: DroneAPI, total_deg: int, step: int) -> None:
-    """Rotate by total_deg in `step`-sized increments (smaller = slower/visible)."""
-    step = max(1, abs(step))
-    sign = 1 if total_deg >= 0 else -1
-    remaining = abs(total_deg)
-    while remaining > 0:
-        d = min(step, remaining)
-        drone.rotate(sign * d, led=LED)
-        remaining -= d
+def _rotate_to(drone: DroneAPI, state: dict, target_heading: int) -> None:
+    """Rotate to an absolute compass heading via the shorter direction.
+
+    Headings: 0 = North (the original "forward"), 90 = East, 180 = South,
+    270 = West. rotate(+deg) is CCW/left, rotate(-deg) is CW/right, so a
+    clockwise (right) turn increases the compass heading.
+    """
+    target_heading %= 360
+    cw = (target_heading - state["heading"]) % 360  # right-turn amount
+    if cw == 0:
+        pass
+    elif cw <= 180:
+        drone.rotate(-cw, led=LED)          # turn right (clockwise)
+    else:
+        drone.rotate(360 - cw, led=LED)     # turn left (shorter way)
+    state["heading"] = target_heading
+
+
+def _side_len_cm(outer_cm: float) -> int:
+    """Length of one side of the outer square (firmware accepts 5..500 cm)."""
+    return max(5, min(500, round(outer_cm)))
 
 
 def diagonal_distance_cm(inner_cm: float, outer_cm: float) -> int:
@@ -198,7 +217,7 @@ def _display_loop(frames, lock, workers, specs, cell):
 # --------------------------------------------------------------------------- #
 # Flight worker: the 9-step routine for one drone, barrier-synced per phase.
 # --------------------------------------------------------------------------- #
-def _worker(choreo, spec, drone, height, dist, yaw_step):
+def _worker(choreo, spec, drone, height, dist, side_len):
     corner = spec["corner"]
 
     def log(msg):
@@ -220,11 +239,19 @@ def _worker(choreo, spec, drone, height, dist, yaw_step):
         drone.hover(1)
         choreo.sync()
 
-        log("6. slow rotate +45 / back / -45 / back to the diagonal")
-        _stepped_rotate(drone, -45, yaw_step)  # clockwise
-        _stepped_rotate(drone, +45, yaw_step)  # back to diagonal
-        _stepped_rotate(drone, +45, yaw_step)  # anticlockwise
-        _stepped_rotate(drone, -45, yaw_step)  # back to diagonal
+        # 6. Fly clockwise around the perimeter of the 180 cm square: all four
+        #    drones advance one edge at a time (each on a different edge, so no
+        #    collisions), completing a full loop back to their own start corner.
+        state = {"heading": (-spec["out"]) % 360}  # currently facing outward
+        for side in range(4):
+            heading = (spec["cw_start"] + 90 * side) % 360
+            log(f"6.{side + 1} face {_COMPASS[heading]} and fly {side_len} cm along the edge")
+            _rotate_to(drone, state, heading)
+            choreo.sync()
+            drone.move(Direction.FORWARD, side_len, led=LED)
+            choreo.sync()
+        # Back at the starting corner: face outward again for step 7.
+        _rotate_to(drone, state, (-spec["out"]) % 360)
         choreo.sync()
 
         log(f"7. fly back {dist} cm to the 60 cm square corner")
@@ -261,10 +288,11 @@ def build_specs(ips, ids):
     return specs
 
 
-def run(specs, *, height, inner, outer, connect_timeout, video, yaw_step, cell):
+def run(specs, *, height, inner, outer, connect_timeout, video, cell):
     dist = diagonal_distance_cm(inner, outer)
-    print(f"=== 4-drone square demo: {inner}cm -> {outer}cm square, "
-          f"diagonal leg {dist}cm, height {height}cm ===")
+    side_len = _side_len_cm(outer)
+    print(f"=== 4-drone square demo: {inner}cm -> {outer}cm square, diagonal leg "
+          f"{dist}cm, perimeter side {side_len}cm, height {height}cm ===")
 
     # --- connect all drones concurrently ---
     drones: dict[str, DroneAPI] = {}
@@ -313,7 +341,7 @@ def run(specs, *, height, inner, outer, connect_timeout, video, yaw_step, cell):
     workers = [
         threading.Thread(
             target=_worker,
-            args=(choreo, spec, drones[spec["corner"]], height, dist, yaw_step),
+            args=(choreo, spec, drones[spec["corner"]], height, dist, side_len),
             name=spec["corner"],
         )
         for spec in specs
@@ -348,13 +376,16 @@ def check(specs, *, height, inner, outer, cell):
     """Print the planned geometry/wiring without any hardware."""
     print(f"pyhulax loaded from: {os.path.dirname(pyhulax.__file__)}")
     dist = diagonal_distance_cm(inner, outer)
-    print(f"square {inner}cm -> {outer}cm, height {height}cm, diagonal leg {dist}cm")
+    side_len = _side_len_cm(outer)
+    print(f"square {inner}cm -> {outer}cm, height {height}cm, diagonal leg {dist}cm, "
+          f"perimeter side {side_len}cm")
     positions = _grid_positions(specs, cell)
     for spec in specs:
         # RTP port each drone's video would use (9000 + id*2).
         port = 9000 + spec["id"] * 2
         print(f"  {spec['corner']} ({spec['name']:>12}) id={spec['id']} ip={spec['ip']:<15} "
-              f"face-out={spec['out']:+4d}deg  window@{positions[spec['corner']]}  rtp:{port}")
+              f"face-out={spec['out']:+4d}deg  cw-start={_COMPASS[spec['cw_start']]}  "
+              f"window@{positions[spec['corner']]}  rtp:{port}")
     print("=== check passed ===")
 
 
@@ -371,9 +402,6 @@ def main(argv=None):
     p.add_argument("--outer", type=float, default=180.0, help="Outer square side in cm (default 180)")
     p.add_argument("--connect-timeout", type=float, default=15.0,
                    help="Seconds to wait for each drone's heartbeat (default 15)")
-    p.add_argument("--yaw-step", type=int, default=15,
-                   help="Degrees per rotation step in the slow wiggle; smaller = slower "
-                        "(default 15; use 45 for a single smooth turn)")
     p.add_argument("--cell", nargs=2, type=int, default=[480, 360], metavar=("W", "H"),
                    help="Video window size in px for the 2x2 grid (default 480 360)")
     p.add_argument("--video", action="store_true",
@@ -395,8 +423,7 @@ def main(argv=None):
         return
 
     run(specs, height=args.height, inner=args.inner, outer=args.outer,
-        connect_timeout=args.connect_timeout, video=args.video,
-        yaw_step=args.yaw_step, cell=cell)
+        connect_timeout=args.connect_timeout, video=args.video, cell=cell)
 
 
 if __name__ == "__main__":
