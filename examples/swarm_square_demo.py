@@ -16,15 +16,13 @@ Four drones start at the corners of a 60 cm x 60 cm square, all facing the same
   6. All four fly clockwise along 2 edges of the 100x100 square (--loop-sides),
      one edge at a time (each on a different edge, so no collisions), ending at
      the diagonally opposite corner.
-  7. Each flies inward to the nearest corner of the 60x60 square.
-  8. Each rotates back to the original "forward" heading.
-  9. All land.
+  7. Each rotates back to the original "forward" heading.
+  8. All land at the corner they finished on.
 
-With the default 2 edges each drone finishes at the diagonally opposite corner
-(the formation swaps across the diagonals). Note: flying every drone back to its
-*original* corner would send all four through the centre at once, so they land
-at the opposite corners instead. Use --loop-sides 4 for a full loop that returns
-each drone to its own starting corner.
+With the default 2 edges each drone finishes at, and lands on, the diagonally
+opposite corner of the 100 cm square, so the formation swaps across the
+diagonals. Use --loop-sides 4 for a full loop that returns each drone to its own
+starting corner before landing.
 
 The drones are synchronized phase-by-phase with a barrier, so they move together.
 
@@ -265,21 +263,15 @@ def _worker(choreo, spec, drone, height, dist, side_len, sides, qr):
             choreo.sync()
             drone.move(Direction.FORWARD, side_len, led=LED)
             choreo.sync()
-        # Face the current corner's outward diagonal so the inward flight in
-        # step 7 is a straight move BACK toward centre.
-        end_out = ((-spec["out"]) + 90 * sides) % 360
-        _rotate_to(drone, state, end_out)
-        choreo.sync()
+        # 6 done: each drone is now at the corner `sides` steps clockwise from
+        # its start (the diagonally opposite corner for sides=2). The drones
+        # land here, at their new corners.
 
-        log(f"7. fly {dist} cm inward to the 60 cm square corner")
-        drone.move(Direction.BACK, dist, led=LED)
-        choreo.sync()
-
-        log("8. rotate to the original forward heading")
+        log("7. rotate to the original forward heading")
         _rotate_to(drone, state, 0)
         choreo.sync()
 
-        log("9. land")
+        log("8. land at the new corner")
         drone.land(led=LED)
     except _Aborted:
         log("aborted (a peer failed) - landing")
