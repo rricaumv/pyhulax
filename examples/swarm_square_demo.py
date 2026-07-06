@@ -7,17 +7,24 @@ Four drones start at the corners of a 60 cm x 60 cm square, all facing the same
   1. Placed at the 4 corners of a 60x60 cm square, all facing forward.
   2. Each drone's video streams in its own window, arranged 2x2 to mirror the
      physical corner layout.
-  3. All take off to 100 cm.
+  3. All take off to 100 cm, then enable QR-mat localization (--qr, default on)
+     so position holding uses the QR code mat.
   4. Each rotates to face diagonally outward toward its own corner
      (e.g. the bottom-left drone turns to face the bottom-left / south-west).
   5. Each flies straight out along that diagonal until the four drones sit at
      the corners of a 100x100 cm square, then hovers.
-  6. All four fly clockwise around the perimeter of the 100x100 square, one edge
-     at a time (each drone on a different edge, so no collisions), completing a
-     full loop back to their own starting corner.
-  7. All fly back to their original 60x60 corners.
+  6. All four fly clockwise along 2 edges of the 100x100 square (--loop-sides),
+     one edge at a time (each on a different edge, so no collisions), ending at
+     the diagonally opposite corner.
+  7. Each flies inward to the nearest corner of the 60x60 square.
   8. Each rotates back to the original "forward" heading.
-  9. All land in their original positions.
+  9. All land.
+
+With the default 2 edges each drone finishes at the diagonally opposite corner
+(the formation swaps across the diagonals). Note: flying every drone back to its
+*original* corner would send all four through the centre at once, so they land
+at the opposite corners instead. Use --loop-sides 4 for a full loop that returns
+each drone to its own starting corner.
 
 The drones are synchronized phase-by-phase with a barrier, so they move together.
 
@@ -217,7 +224,7 @@ def _display_loop(frames, lock, workers, specs, cell):
 # --------------------------------------------------------------------------- #
 # Flight worker: the 9-step routine for one drone, barrier-synced per phase.
 # --------------------------------------------------------------------------- #
-def _worker(choreo, spec, drone, height, dist, side_len):
+def _worker(choreo, spec, drone, height, dist, side_len, sides, qr):
     corner = spec["corner"]
 
     def log(msg):
@@ -228,6 +235,13 @@ def _worker(choreo, spec, drone, height, dist, side_len):
 
         log(f"3. takeoff to {height} cm")
         drone.takeoff(height_cm=height, led=LED)
+        if qr:
+            log("   enable QR localization (using the QR mat)")
+            try:
+                drone.set_qr_localization(True)
+                drone.hover(1)  # let the down-camera acquire the mat grid
+            except Exception as exc:  # noqa: BLE001
+                log(f"   QR enable failed: {exc}")
         choreo.sync()
 
         log(f"4. rotate {spec['out']:+d} deg to face {spec['name']} (outward)")
@@ -239,27 +253,30 @@ def _worker(choreo, spec, drone, height, dist, side_len):
         drone.hover(1)
         choreo.sync()
 
-        # 6. Fly clockwise around the perimeter of the outer square: all four
+        # 6. Fly clockwise along `sides` edges of the outer square. All four
         #    drones advance one edge at a time (each on a different edge, so no
-        #    collisions), completing a full loop back to their own start corner.
+        #    collisions). With sides=2 each drone ends at the diagonally
+        #    opposite corner.
         state = {"heading": (-spec["out"]) % 360}  # currently facing outward
-        for side in range(4):
+        for side in range(sides):
             heading = (spec["cw_start"] + 90 * side) % 360
             log(f"6.{side + 1} face {_COMPASS[heading]} and fly {side_len} cm along the edge")
             _rotate_to(drone, state, heading)
             choreo.sync()
             drone.move(Direction.FORWARD, side_len, led=LED)
             choreo.sync()
-        # Back at the starting corner: face outward again for step 7.
-        _rotate_to(drone, state, (-spec["out"]) % 360)
+        # Face the current corner's outward diagonal so the inward flight in
+        # step 7 is a straight move BACK toward centre.
+        end_out = ((-spec["out"]) + 90 * sides) % 360
+        _rotate_to(drone, state, end_out)
         choreo.sync()
 
-        log(f"7. fly back {dist} cm to the 60 cm square corner")
+        log(f"7. fly {dist} cm inward to the 60 cm square corner")
         drone.move(Direction.BACK, dist, led=LED)
         choreo.sync()
 
-        log("8. rotate back to the original forward heading")
-        drone.rotate(-spec["out"], led=LED)
+        log("8. rotate to the original forward heading")
+        _rotate_to(drone, state, 0)
         choreo.sync()
 
         log("9. land")
@@ -288,11 +305,12 @@ def build_specs(ips, ids):
     return specs
 
 
-def run(specs, *, height, inner, outer, connect_timeout, video, cell):
+def run(specs, *, height, inner, outer, connect_timeout, video, cell, sides, qr):
     dist = diagonal_distance_cm(inner, outer)
     side_len = _side_len_cm(outer)
     print(f"=== 4-drone square demo: {inner}cm -> {outer}cm square, diagonal leg "
-          f"{dist}cm, perimeter side {side_len}cm, height {height}cm ===")
+          f"{dist}cm, perimeter side {side_len}cm, {sides} edge(s) clockwise, "
+          f"QR={'on' if qr else 'off'}, height {height}cm ===")
 
     # --- connect all drones concurrently ---
     drones: dict[str, DroneAPI] = {}
@@ -341,7 +359,7 @@ def run(specs, *, height, inner, outer, connect_timeout, video, cell):
     workers = [
         threading.Thread(
             target=_worker,
-            args=(choreo, spec, drones[spec["corner"]], height, dist, side_len),
+            args=(choreo, spec, drones[spec["corner"]], height, dist, side_len, sides, qr),
             name=spec["corner"],
         )
         for spec in specs
@@ -372,20 +390,23 @@ def run(specs, *, height, inner, outer, connect_timeout, video, cell):
         raise SystemExit(f"{len(choreo.errors)} drone(s) errored: {list(choreo.errors)}")
 
 
-def check(specs, *, height, inner, outer, cell):
+def check(specs, *, height, inner, outer, cell, sides, qr):
     """Print the planned geometry/wiring without any hardware."""
     print(f"pyhulax loaded from: {os.path.dirname(pyhulax.__file__)}")
     dist = diagonal_distance_cm(inner, outer)
     side_len = _side_len_cm(outer)
     print(f"square {inner}cm -> {outer}cm, height {height}cm, diagonal leg {dist}cm, "
-          f"perimeter side {side_len}cm")
+          f"perimeter side {side_len}cm, {sides} edge(s) clockwise, QR={'on' if qr else 'off'}")
     positions = _grid_positions(specs, cell)
+    # Corner reached after `sides` clockwise steps (for the end/land summary).
+    cw_seq = ["TL", "TR", "BR", "BL"]  # clockwise corner order
     for spec in specs:
-        # RTP port each drone's video would use (9000 + id*2).
-        port = 9000 + spec["id"] * 2
+        idx = cw_seq.index(spec["corner"])
+        ends_at = cw_seq[(idx + sides) % 4]
+        port = 9000 + spec["id"] * 2  # RTP port each drone's video would use
         print(f"  {spec['corner']} ({spec['name']:>12}) id={spec['id']} ip={spec['ip']:<15} "
               f"face-out={spec['out']:+4d}deg  cw-start={_COMPASS[spec['cw_start']]}  "
-              f"window@{positions[spec['corner']]}  rtp:{port}")
+              f"ends@{ends_at}  window@{positions[spec['corner']]}  rtp:{port}")
     print("=== check passed ===")
 
 
@@ -402,6 +423,13 @@ def main(argv=None):
     p.add_argument("--outer", type=float, default=100.0, help="Outer square side in cm (default 100)")
     p.add_argument("--connect-timeout", type=float, default=15.0,
                    help="Seconds to wait for each drone's heartbeat (default 15)")
+    p.add_argument("--loop-sides", type=int, default=2, choices=range(0, 5),
+                   metavar="{0..4}",
+                   help="Edges of the outer square to fly clockwise in step 6 "
+                        "(default 2 = end at the diagonally opposite corner; "
+                        "4 = full loop back to the start corner)")
+    p.add_argument("--qr", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable QR-mat localization after takeoff (default: enabled)")
     p.add_argument("--cell", nargs=2, type=int, default=[480, 360], metavar=("W", "H"),
                    help="Video window size in px for the 2x2 grid (default 480 360)")
     p.add_argument("--video", action="store_true",
@@ -419,11 +447,13 @@ def main(argv=None):
     cell = (args.cell[0], args.cell[1])
 
     if args.check:
-        check(specs, height=args.height, inner=args.inner, outer=args.outer, cell=cell)
+        check(specs, height=args.height, inner=args.inner, outer=args.outer, cell=cell,
+              sides=args.loop_sides, qr=args.qr)
         return
 
     run(specs, height=args.height, inner=args.inner, outer=args.outer,
-        connect_timeout=args.connect_timeout, video=args.video, cell=cell)
+        connect_timeout=args.connect_timeout, video=args.video, cell=cell,
+        sides=args.loop_sides, qr=args.qr)
 
 
 if __name__ == "__main__":

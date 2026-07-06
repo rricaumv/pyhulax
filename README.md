@@ -112,10 +112,12 @@ Useful flags: `--height` (takeoff/hover height in cm), `--hover` (seconds),
 (stream each drone in its own window; needs `pip install "pyhulax[video]"`).
 
 `examples/swarm_square_demo.py` is a four-drone choreography: the drones start
-at the corners of a 60 cm square, take off, fan out along the diagonals to a
-100 cm square, fly one clockwise loop around that square's perimeter, return to
-the 60 cm corners, and land — synchronized phase by phase, with optional 2x2
-video windows mirroring the field layout.
+at the corners of a 60 cm square, take off (enabling QR-mat localization), fan
+out along the diagonals to a 100 cm square, fly two edges clockwise to the
+diagonally opposite corner, drop into the 60 cm square, and land — synchronized
+phase by phase, with optional 2x2 video windows mirroring the field layout.
+Flags: `--qr/--no-qr` (QR-mat localization, default on), `--loop-sides` (edges
+flown in step 6; default 2, use 4 for a full loop back to the start corner).
 
 ```bash
 # 4 drones, order: bottom-left bottom-right top-left top-right
