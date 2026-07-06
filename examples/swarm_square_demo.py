@@ -11,8 +11,8 @@ Four drones start at the corners of a 60 cm x 60 cm square, all facing the same
   4. Each rotates to face diagonally outward toward its own corner
      (e.g. the bottom-left drone turns to face the bottom-left / south-west).
   5. Each flies straight out along that diagonal until the four drones sit at
-     the corners of a 180x180 cm square, then hovers.
-  6. All four fly clockwise around the perimeter of the 180x180 square, one edge
+     the corners of a 100x100 cm square, then hovers.
+  6. All four fly clockwise around the perimeter of the 100x100 square, one edge
      at a time (each drone on a different edge, so no collisions), completing a
      full loop back to their own starting corner.
   7. All fly back to their original 60x60 corners.
@@ -234,12 +234,12 @@ def _worker(choreo, spec, drone, height, dist, side_len):
         drone.rotate(spec["out"], led=LED)
         choreo.sync()
 
-        log(f"5. fly out {dist} cm to the 180 cm square corner")
+        log(f"5. fly out {dist} cm to the outer square corner")
         drone.move(Direction.FORWARD, dist, led=LED)
         drone.hover(1)
         choreo.sync()
 
-        # 6. Fly clockwise around the perimeter of the 180 cm square: all four
+        # 6. Fly clockwise around the perimeter of the outer square: all four
         #    drones advance one edge at a time (each on a different edge, so no
         #    collisions), completing a full loop back to their own start corner.
         state = {"heading": (-spec["out"]) % 360}  # currently facing outward
@@ -399,7 +399,7 @@ def main(argv=None):
                    help="4 drone ids in the same order (default 1 2 3 4)")
     p.add_argument("--height", type=int, default=100, help="Takeoff height in cm (default 100)")
     p.add_argument("--inner", type=float, default=60.0, help="Inner square side in cm (default 60)")
-    p.add_argument("--outer", type=float, default=180.0, help="Outer square side in cm (default 180)")
+    p.add_argument("--outer", type=float, default=100.0, help="Outer square side in cm (default 100)")
     p.add_argument("--connect-timeout", type=float, default=15.0,
                    help="Seconds to wait for each drone's heartbeat (default 15)")
     p.add_argument("--cell", nargs=2, type=int, default=[480, 360], metavar=("W", "H"),
