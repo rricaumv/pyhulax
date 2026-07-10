@@ -141,6 +141,20 @@ python examples/swarm_vertical_weave_demo.py \
     --ids 0 1 2 3 --video
 ```
 
+`examples/object_detection_demo.py` runs YOLO object detection on the live video
+of one or more drones (no flight): it streams each camera, detects + draws boxes
+per frame, and shows each drone in its own auto-arranged window. Needs the video
+and YOLO deps: `pip install "pyhulax[video]" ultralytics`.
+
+```bash
+# One drone; press 'q' or Ctrl-C to stop
+python examples/object_detection_demo.py --ips 192.168.1.58
+
+# Several drones, larger model, only people + cars (COCO ids 0, 2)
+python examples/object_detection_demo.py \
+    --ips 192.168.1.58 192.168.1.70 --model yolov8s.pt --classes 0 2
+```
+
 Configured defaults:
 
 ```python
