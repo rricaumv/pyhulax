@@ -23,7 +23,9 @@ class DetectorConfig:
     max_detections: int = 100
     classes: Optional[List[int]] = None  # Filter to specific class IDs
     device: str = "auto"  # "auto", "cpu", "cuda", "cuda:0", "mps"
-    half: bool = False  # FP16 inference (GPU only)
+    # Inference precision (ultralytics `quantize`, replaces the deprecated
+    # `half`): 16/"fp16" for FP16, 32/"fp32"/None for FP32, 8 for int8.
+    quantize: Optional[Union[int, str]] = None
     verbose: bool = False
 
 
@@ -119,9 +121,10 @@ class YOLODetector(BaseDetector):
         iou_threshold: float = 0.45,
         classes: Optional[List[int]] = None,
         device: str = "auto",
-        half: bool = False,
+        quantize: Optional[Union[int, str]] = None,
         verbose: bool = False,
         imgsz: int = 640,
+        half: Optional[bool] = None,
     ):
         """
         Initialize YOLO detector.
@@ -133,16 +136,29 @@ class YOLODetector(BaseDetector):
             iou_threshold: NMS IoU threshold
             classes: List of class IDs to detect (None for all)
             device: Device to run on ("auto", "cpu", "cuda", "cuda:0", "mps")
-            half: Use FP16 inference (faster on GPU)
+            quantize: Inference precision (ultralytics arg, replaces `half`):
+                     16/"fp16" for FP16, 32/"fp32"/None for FP32, 8 for int8.
             verbose: Print detection info
             imgsz: Input image size for inference
+            half: Deprecated. Use quantize=16 for FP16 instead.
         """
+        if half is not None:
+            import warnings
+
+            warnings.warn(
+                "'half' is deprecated; use quantize=16 (FP16) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if quantize is None:
+                quantize = 16 if half else None
+
         config = DetectorConfig(
             confidence_threshold=confidence,
             iou_threshold=iou_threshold,
             classes=classes,
             device=device,
-            half=half,
+            quantize=quantize,
             verbose=verbose,
         )
         super().__init__(config)
@@ -214,7 +230,7 @@ class YOLODetector(BaseDetector):
             iou=self.config.iou_threshold,
             classes=self.config.classes,
             verbose=self.config.verbose,
-            half=self.config.half,
+            quantize=self.config.quantize,
             imgsz=self._imgsz,
         )
 
@@ -272,7 +288,7 @@ class YOLOSegmentDetector(YOLODetector):
             iou=self.config.iou_threshold,
             classes=self.config.classes,
             verbose=self.config.verbose,
-            half=self.config.half,
+            quantize=self.config.quantize,
             imgsz=self._imgsz,
         )
 
