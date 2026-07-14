@@ -143,7 +143,9 @@ python examples/swarm_vertical_weave_demo.py \
 
 `examples/object_detection_demo.py` runs YOLO object detection on the live video
 of one or more drones (no flight): it streams each camera, detects + draws boxes
-per frame, and shows each drone in its own auto-arranged window. Needs the video
+per frame, and shows each drone in its own auto-arranged window. Detection runs
+off the decode thread via `pyhulax.video.AsyncDetector` (wrap any detector to
+keep the stream smooth — slow inference never stalls the video). Needs the video
 and YOLO deps: `pip install "pyhulax[video]" ultralytics`.
 
 ```bash

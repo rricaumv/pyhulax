@@ -28,6 +28,7 @@ _LAZY_EXPORTS = {
     "SegmentedRecorder": (".recording", "SegmentedRecorder", "Install the 'video' extra for recording support."),
     "RecordingConfig": (".recording", "RecordingConfig", "Install the 'video' extra for recording support."),
     "BaseDetector": (".detection", "BaseDetector", "Install the 'vision' extra for detection support."),
+    "AsyncDetector": (".detection", "AsyncDetector", "Install the 'vision' extra for detection support."),
     "DetectorConfig": (".detection", "DetectorConfig", "Install the 'vision' extra for detection support."),
     "DrawDetections": (".detection", "DrawDetections", "Install the 'vision' extra for detection support."),
     "DetectionLogger": (".detection", "DetectionLogger", "Install the 'vision' extra for detection support."),
@@ -82,6 +83,7 @@ __all__ = [
     "RecordingConfig",
     # Detection
     "BaseDetector",
+    "AsyncDetector",
     "DetectorConfig",
     "ONNXDetector",
     "YOLODetector",

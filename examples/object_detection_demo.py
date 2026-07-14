@@ -74,44 +74,14 @@ def _window_positions(n: int, cell: tuple[int, int]) -> list[tuple[int, int]]:
 
 
 # --------------------------------------------------------------------------- #
-# Async detection pipeline. Detection is deliberately NOT a stream callback:
-# the decode loop runs callbacks inline, so a slow detector would stall decoding
-# and pile up RTP latency. Instead the decode loop only stashes the newest frame
-# (fast); a per-drone worker thread runs YOLO on the latest frame; and the main
-# thread draws the most recent detections on the freshest frame. The video stays
-# smooth and low-latency no matter how slow inference is.
-# Each drone gets its own detector instance (ultralytics models are not safe to
+# Async detection pipeline, built from the SDK's AsyncDetector. AsyncDetector
+# wraps a detector so it runs on a background thread instead of inline in the
+# video decode loop - a slow detector would otherwise stall decoding and pile up
+# latency. The decode-loop pipeline stays fast: AsyncDetector (stash + attach
+# latest detections) -> DrawDetections (draw boxes) -> capture (stash frame for
+# display). Each drone gets its own detector (ultralytics models are not safe to
 # call concurrently from multiple threads).
 # --------------------------------------------------------------------------- #
-def _start_stream(drone, key, frames, lock, log):
-    """Start the video stream with only a fast frame-capture callback."""
-    try:
-        import pyhulax.video  # noqa: F401 - ensure the video extra is present
-    except ImportError as exc:
-        log(f"[{key}] video unavailable: {exc}\n"
-            f"      install with: pip install 'pyhulax[video]' ultralytics")
-        return None
-    try:
-        drone.set_video_stream(True)
-        stream = drone.create_video_stream()
-
-        def _capture(frame):
-            try:
-                with lock:
-                    frames[key] = frame
-            except Exception:  # noqa: BLE001
-                pass
-            return frame
-
-        stream.add_callback(_capture)
-        stream.start()
-        log(f"[{key}] video stream started")
-        return stream
-    except Exception as exc:  # noqa: BLE001
-        log(f"[{key}] could not start video stream: {exc}")
-        return None
-
-
 def _make_detector(model_path, confidence, classes, imgsz, log):
     try:
         from pyhulax.video import YOLODetector
@@ -127,42 +97,54 @@ def _make_detector(model_path, confidence, classes, imgsz, log):
         return None
 
 
-def _detection_worker(key, detector, frames, dets, lock, stop_event, log):
-    """Detect on the latest frame only, off the decode/display path.
+def _start_stream(drone, key, detector, frames, lock, log):
+    """Start the video stream with an async detection pipeline.
 
-    By always grabbing the current newest frame it naturally drops frames that
-    arrive while an inference is in flight, so the stream never backs up.
+    Returns (stream, async_detector) or (None, None) on failure.
     """
-    last_n = -1
-    while not stop_event.is_set():
-        with lock:
-            fr = frames.get(key)
-        if fr is None or fr.frame_number == last_n:
-            time.sleep(0.005)
-            continue
-        last_n = fr.frame_number
-        try:
-            result = detector.detect(fr.image)
-            with lock:
-                dets[key] = result
-        except Exception as exc:  # noqa: BLE001
-            log(f"[{key}] detection error: {exc}")
-            time.sleep(0.2)
+    try:
+        from pyhulax.video import AsyncDetector, DrawDetections
+    except ImportError as exc:
+        log(f"[{key}] video unavailable: {exc}\n"
+            f"      install with: pip install 'pyhulax[video]' ultralytics")
+        return None, None
+    try:
+        drone.set_video_stream(True)
+        stream = drone.create_video_stream()
+        adet = AsyncDetector(detector)
+
+        def _capture(frame):
+            try:
+                with lock:
+                    frames[key] = frame
+            except Exception:  # noqa: BLE001
+                pass
+            return frame
+
+        stream.add_callback(adet)              # off-thread detection (non-blocking)
+        stream.add_callback(DrawDetections())  # draw the latest boxes
+        stream.add_callback(_capture)          # stash annotated frame for display
+        stream.start()
+        log(f"[{key}] detection stream started")
+        return stream, adet
+    except Exception as exc:  # noqa: BLE001
+        log(f"[{key}] could not start detection stream: {exc}")
+        return None, None
 
 
-def _display_loop(keys, frames, dets, detectors, lock, cell, stop_event):
-    """Main-thread window loop: draw the latest detections on the freshest frame."""
+def _display_loop(keys, frames, adets, lock, cell, stop_event):
+    """Main-thread window loop showing the annotated frames in a grid."""
     try:
         import cv2
     except ImportError:
         # Headless fallback: periodically log detections until stopped.
         while not stop_event.is_set():
-            with lock:
-                snap = {k: dets.get(k) for k in keys}
-            for k, d in snap.items():
-                if d:
-                    labels = ", ".join(sorted({x.label for x in d}))
-                    print(f"[{k}] {len(d)} detections: {labels}", flush=True)
+            for k in keys:
+                adet = adets.get(k)
+                dets = adet.latest_detections if adet else []
+                if dets:
+                    labels = ", ".join(sorted({d.label for d in dets}))
+                    print(f"[{k}] {len(dets)} detections: {labels}", flush=True)
             time.sleep(2.0)
         return
 
@@ -173,18 +155,13 @@ def _display_loop(keys, frames, dets, detectors, lock, cell, stop_event):
         for i, k in enumerate(keys):
             with lock:
                 fr = frames.get(k)
-                d = dets.get(k)
             if fr is None:
                 continue
-            if d:
-                fr.detections = d
-                img = fr.draw_detections()
-            else:
-                img = fr.image.copy()
-            det = detectors.get(k)
-            if det is not None:
-                ms = det.avg_inference_time
-                cv2.putText(img, f"det {ms:.0f} ms  {len(d or [])} obj",
+            img = fr.image
+            adet = adets.get(k)
+            if adet is not None:
+                cv2.putText(img, f"det {adet.avg_inference_time:.0f} ms  "
+                            f"{len(fr.detections)} obj",
                             (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             win = f"Drone {k}"
             if k not in created:
@@ -238,35 +215,26 @@ def run(specs, *, connect_timeout, model, confidence, classes, imgsz, cell, dura
         raise SystemExit("Aborting: could not connect to all drones.")
 
     frames: dict[str, object] = {}
-    dets: dict[str, object] = {}
-    detectors: dict[str, object] = {}
+    adets: dict[str, object] = {}
     lock = threading.Lock()
     streams: dict[str, object] = {}
     stop_event = threading.Event()
-    det_threads: list[threading.Thread] = []
     log = lambda m: print(m, flush=True)  # noqa: E731
 
     for spec in specs:
         key = spec["key"]
-        st = _start_stream(drones[key], key, frames, lock, log)
-        if st is None:
+        detector = _make_detector(model, confidence, classes, imgsz, log)
+        if detector is None:
             continue
-        streams[key] = st
-        det = _make_detector(model, confidence, classes, imgsz, log)
-        if det is not None:
-            detectors[key] = det
-            t = threading.Thread(
-                target=_detection_worker,
-                args=(key, det, frames, dets, lock, stop_event, log),
-                name=f"detect-{key}", daemon=True,
-            )
-            t.start()
-            det_threads.append(t)
+        stream, adet = _start_stream(drones[key], key, detector, frames, lock, log)
+        if stream is not None:
+            streams[key] = stream
+            adets[key] = adet
 
     if not streams:
         for d in drones.values():
             d.disconnect()
-        raise SystemExit("No video streams started (missing video/YOLO deps?).")
+        raise SystemExit("No detection streams started (missing video/YOLO deps?).")
 
     timer = None
     if duration:
@@ -277,7 +245,7 @@ def run(specs, *, connect_timeout, model, confidence, classes, imgsz, cell, dura
     print("Streaming + detecting (async - video stays smooth). "
           "Press 'q' in a window or Ctrl-C to stop.")
     try:
-        _display_loop([s["key"] for s in specs], frames, dets, detectors, lock,
+        _display_loop([s["key"] for s in specs], frames, adets, lock,
                       cell, stop_event)
     except KeyboardInterrupt:
         print("\nInterrupted - stopping.")
@@ -285,8 +253,11 @@ def run(specs, *, connect_timeout, model, confidence, classes, imgsz, cell, dura
         stop_event.set()
         if timer is not None:
             timer.cancel()
-        for t in det_threads:
-            t.join(timeout=2.0)
+        for adet in adets.values():
+            try:
+                adet.stop()
+            except Exception:  # noqa: BLE001
+                pass
         for st in streams.values():
             try:
                 st.stop()
