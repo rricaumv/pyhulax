@@ -4,6 +4,7 @@ Object detection integration for video streaming.
 Provides YOLO and other detector wrappers as VideoStream callbacks.
 """
 
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -400,6 +401,107 @@ class FilterDetector(BaseDetector):
             filtered.append(det)
 
         return filtered
+
+
+class AsyncDetector:
+    """
+    Run a detector off the video decode thread to keep the stream smooth.
+
+    A detector added directly as a stream callback runs inline in the decode
+    loop, so slow inference stalls decoding and piles up latency. Wrap it in an
+    ``AsyncDetector`` instead: the callback returns immediately after stashing
+    the frame and attaching the most recent detections, while a background
+    thread runs the wrapped detector on the latest frame (dropping any frames
+    that arrive mid-inference). Downstream callbacks (``DrawDetections``,
+    ``VideoDisplay``, ...) still see detections; the video stays real-time and
+    the boxes simply refresh at the detector's own rate.
+
+    Example:
+    ```python
+    from pyhulax.video import (
+        VideoStream, YOLODetector, AsyncDetector, DrawDetections, VideoDisplay,
+    )
+
+    stream = VideoStream(drone_ip="192.168.1.58")
+    stream.add_callback(AsyncDetector(YOLODetector("yolov8n.pt")))
+    stream.add_callback(DrawDetections())
+    stream.add_callback(VideoDisplay())
+    stream.start()
+    ```
+
+    The worker starts automatically on the first frame and runs as a daemon
+    thread. Call ``stop()`` to shut it down explicitly.
+    """
+
+    def __init__(self, detector: BaseDetector):
+        self._detector = detector
+        self._lock = threading.Lock()
+        self._latest_frame: Optional[Frame] = None
+        self._latest_detections: List[Detection] = []
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    @property
+    def detector(self) -> BaseDetector:
+        """The wrapped detector."""
+        return self._detector
+
+    @property
+    def avg_inference_time(self) -> float:
+        """Average inference time (ms) of the wrapped detector."""
+        return self._detector.avg_inference_time
+
+    @property
+    def latest_detections(self) -> List[Detection]:
+        """The most recent detections (thread-safe copy)."""
+        with self._lock:
+            return list(self._latest_detections)
+
+    def start(self) -> None:
+        """Start the background detection thread (idempotent)."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="AsyncDetector", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop the background detection thread."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    def __call__(self, frame: Frame) -> Frame:
+        """Stash the frame for the worker and attach the latest detections.
+
+        The worker auto-starts on the first frame. After an explicit stop() it
+        stays stopped until start() is called again.
+        """
+        with self._lock:
+            self._latest_frame = frame
+            frame.detections = list(self._latest_detections)
+        if not self._stop.is_set() and (self._thread is None or not self._thread.is_alive()):
+            self.start()
+        return frame
+
+    def _run(self) -> None:
+        last_number = -1
+        while not self._stop.is_set():
+            with self._lock:
+                frame = self._latest_frame
+            if frame is None or frame.frame_number == last_number:
+                time.sleep(0.005)
+                continue
+            last_number = frame.frame_number
+            try:
+                result = self._detector.detect(frame.image)
+                with self._lock:
+                    self._latest_detections = result
+            except Exception:  # noqa: BLE001 - keep the worker alive on errors
+                time.sleep(0.1)
 
 
 class DrawDetections:
