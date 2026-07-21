@@ -75,3 +75,46 @@ def test_stop_halts_the_worker():
         adet(_FakeFrame(n, _img()))
     time.sleep(0.1)
     assert det.calls == calls_after_stop
+
+
+def test_detections_report_their_source_frame_number():
+    det = _FakeDetector(delay=0.02)
+    adet = AsyncDetector(det)
+    try:
+        assert adet.latest_detection_frame_number == -1  # nothing detected yet
+        adet(_FakeFrame(7, _img()))
+        deadline = time.time() + 2.0
+        while adet.latest_detection_frame_number < 0 and time.time() < deadline:
+            time.sleep(0.01)
+        # Detections and their frame number stay consistent via latest().
+        dets, fn = adet.latest()
+        assert fn == 7
+        assert dets == adet.latest_detections
+    finally:
+        adet.stop()
+
+
+def test_wait_for_fresh_detection_blocks_until_a_newer_frame():
+    det = _FakeDetector(delay=0.02)
+    adet = AsyncDetector(det)
+    try:
+        # Prime the worker with an old frame and let it detect.
+        adet(_FakeFrame(3, _img()))
+        deadline = time.time() + 2.0
+        while adet.latest_detection_frame_number != 3 and time.time() < deadline:
+            time.sleep(0.01)
+        assert adet.latest_detection_frame_number == 3
+
+        # Now a newer frame arrives; waiting for something after frame 3 must
+        # return only once the detector has processed the newer frame.
+        adet(_FakeFrame(10, _img()))
+        dets = adet.wait_for_fresh_detection(after_frame_number=3, timeout=2.0)
+        assert adet.latest_detection_frame_number == 10
+        assert dets == adet.latest_detections
+
+        # With no newer frame, it times out and returns the latest (frame 10).
+        t0 = time.perf_counter()
+        adet.wait_for_fresh_detection(after_frame_number=10, timeout=0.2)
+        assert (time.perf_counter() - t0) >= 0.2
+    finally:
+        adet.stop()

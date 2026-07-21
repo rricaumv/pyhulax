@@ -438,6 +438,7 @@ class AsyncDetector:
         self._lock = threading.Lock()
         self._latest_frame: Optional[Frame] = None
         self._latest_detections: List[Detection] = []
+        self._detection_frame_number: int = -1
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -454,6 +455,45 @@ class AsyncDetector:
     @property
     def latest_detections(self) -> List[Detection]:
         """The most recent detections (thread-safe copy)."""
+        with self._lock:
+            return list(self._latest_detections)
+
+    @property
+    def latest_detection_frame_number(self) -> int:
+        """``frame_number`` of the frame the current detections were computed on.
+
+        ``-1`` until the first detection completes. Combine with the frame numbers
+        flowing through the stream to tell whether the current detections reflect
+        the drone's *present* view or a stale, earlier one - essential for visual
+        servoing (e.g. don't act on a box detected before the drone stopped
+        moving).
+        """
+        with self._lock:
+            return self._detection_frame_number
+
+    def latest(self) -> "tuple[List[Detection], int]":
+        """Return ``(detections, frame_number)`` atomically (thread-safe copy)."""
+        with self._lock:
+            return list(self._latest_detections), self._detection_frame_number
+
+    def wait_for_fresh_detection(
+        self, after_frame_number: int, timeout: float = 2.0, poll: float = 0.02
+    ) -> List[Detection]:
+        """Block until detections computed on a frame *newer* than
+        ``after_frame_number`` are available, then return them.
+
+        Use this after a blocking move to avoid acting on detections that were
+        computed on an earlier frame (video buffering + inference lag): capture a
+        frame number once the move has settled, then wait for the detector to
+        catch up past it. Returns the latest detections on timeout (or if the
+        worker has been stopped).
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline and not self._stop.is_set():
+            with self._lock:
+                if self._detection_frame_number > after_frame_number:
+                    return list(self._latest_detections)
+            time.sleep(poll)
         with self._lock:
             return list(self._latest_detections)
 
@@ -500,6 +540,7 @@ class AsyncDetector:
                 result = self._detector.detect(frame.image)
                 with self._lock:
                     self._latest_detections = result
+                    self._detection_frame_number = frame.frame_number
             except Exception:  # noqa: BLE001 - keep the worker alive on errors
                 time.sleep(0.1)
 

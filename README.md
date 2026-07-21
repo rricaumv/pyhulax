@@ -164,7 +164,11 @@ detector reports the target class, strafes (`single_fly_left/right/up/down`) to
 put the target's box center on the frame center, flashes its LED
 (`single_fly_lamplight(..., mode=32)`) for 5 s, then returns home by retracing
 every recorded motion in reverse (inverse move, reverse order) and landing
-(`single_fly_touchdown`) — no reliance on absolute-coordinate APIs. Stock
+(`single_fly_touchdown`) — no reliance on absolute-coordinate APIs. Search and
+centering only act on a detection computed *after* the drone stopped moving
+(`AsyncDetector.wait_for_fresh_detection`), so a stale box from mid-rotation
+never triggers "found" or throws off centering (tune with `--settle` /
+`--fresh-timeout`). Stock
 YOLO/COCO has no `tank` class, so use a custom model or `--target person` to
 rehearse; `--check` prints the plan and self-tests the retrace logic without
 hardware.
