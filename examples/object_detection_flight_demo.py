@@ -10,8 +10,9 @@ Unlike ``object_detection_demo.py`` (video only), this one flies. The mission:
                   reports the target class (e.g. "tank")
   3. center       strafe single_fly_left/right/up/down until the target box
                   center matches the frame center
-  4. LED flash    single_fly_lamplight(r, g, b, time, mode=32)  (32 = flashing)
-                  for 5 s
+  4. LED flash    single_fly_lamplight(r, g, b, time, mode) for 5 s -
+                  --led-mode flash (blink --led-rgb colour, 32), rainbow
+                  (seven-colour cycle, 16), or cycle (R->G->B, 4)
   5. return home  every executed motion is recorded and retraced in reverse
                   (inverse move, reverse order), then single_fly_touchdown().
                   This avoids relying on the ambiguous absolute-coordinate APIs.
@@ -33,9 +34,13 @@ Usage:
     python examples/object_detection_flight_demo.py \
         --ip 192.168.1.58 --id 1 --model tank_yolov8.pt --target tank
 
-    # Rehearse with a stock model against a person
+    # Rehearse with a stock model against a person, rainbow flash on find
     python examples/object_detection_flight_demo.py \
-        --ip 192.168.1.58 --id 1 --target person
+        --ip 192.168.1.58 --id 1 --target person --led-mode rainbow
+
+    # Custom flash colour (green) - three 0-255 values
+    python examples/object_detection_flight_demo.py \
+        --ip 192.168.1.58 --id 1 --led-rgb 0 255 0
 
     # Print the plan + verify the retrace/inverse logic, no hardware
     python examples/object_detection_flight_demo.py --check
@@ -67,7 +72,17 @@ import time  # noqa: E402
 import traceback  # noqa: E402
 
 from pyhulax import DroneAPI  # noqa: E402
+from pyhulax.core import LEDMode  # noqa: E402
 from pyhulax.core.exceptions import DroneConnectionError  # noqa: E402
+
+
+# LED effect for the "target found" flash (step 4). single_fly_lamplight takes a
+# raw mode byte; these are the SDK's LEDMode values.
+LED_FLASH_MODES = {
+    "flash": int(LEDMode.BLINK),          # 32 - blink the single --led-rgb colour
+    "rainbow": int(LEDMode.SEVEN_COLOR),  # 16 - multi-colour rainbow cycle
+    "cycle": int(LEDMode.RGB_CYCLE),      # 4  - cycle red -> green -> blue
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -171,13 +186,12 @@ def _make_detector(model_path, confidence, classes, imgsz, log):
         raise SystemExit(f"could not create detector: {exc}")
 
 
-def _find_target(adet, target: str):
-    """Largest detection whose label matches `target` (case-insensitive).
+def _pick_target(dets, target: str):
+    """Largest detection in `dets` whose label matches `target` (case-insensitive).
 
     `target` == "any"/"*" matches the largest detection of any class. Returns a
     Detection or None.
     """
-    dets = adet.latest_detections
     if not dets:
         return None
     want = target.lower()
@@ -188,6 +202,23 @@ def _find_target(adet, target: str):
     if not candidates:
         return None
     return max(candidates, key=lambda d: d.bbox.area)
+
+
+def _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop):
+    """Find the target using a detection computed *after* the drone settled.
+
+    The drone's video is buffered and inference lags, so `latest_detections`
+    right after a move can still describe the pre-move view. This settles the
+    view, notes a freshly-decoded frame number, waits for the detector to catch
+    up past it, and only then picks the target - so search/centering never act on
+    a box from an orientation the drone has already left.
+    """
+    if stop.is_set():
+        return None
+    time.sleep(settle)                 # let the video buffer flush + view stabilize
+    baseline = current_frame_number()  # a frame decoded after the move settled
+    dets = adet.wait_for_fresh_detection(baseline, timeout=fresh_timeout)
+    return _pick_target(dets, target)
 
 
 # --------------------------------------------------------------------------- #
@@ -211,17 +242,23 @@ def climb_to_height(server, motion, target_cm, tol, step, settle, log, stop):
         time.sleep(settle)
 
 
-def search_for_target(motion, adet, target, step_deg, settle, log, stop):
-    """Turn right in steps until the target is detected (or a full turn elapses)."""
-    if _find_target(adet, target) is not None:
+def search_for_target(motion, adet, target, step_deg, settle, fresh_timeout,
+                      current_frame_number, log, stop):
+    """Turn right in steps until the target is detected (or a full turn elapses).
+
+    After each blocking turn the drone is stationary; only then - once a
+    post-turn frame has been detected - do we decide whether the target is in
+    view, so we never lock onto a box seen mid-rotation.
+    """
+    if _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop):
         log("  target already in view")
         return True
     turned = 0
     while turned < 360 and not stop.is_set():
-        motion.turn_right(step_deg)
+        motion.turn_right(step_deg)  # blocking: the drone stops before we look
         turned += step_deg
-        time.sleep(settle)  # let the view settle + detector catch up
-        det = _find_target(adet, target)
+        det = _fresh_find(adet, target, settle, fresh_timeout,
+                          current_frame_number, stop)
         log(f"  turned {turned} deg -> {'FOUND' if det else 'no target'}")
         if det is not None:
             return True
@@ -229,15 +266,20 @@ def search_for_target(motion, adet, target, step_deg, settle, log, stop):
 
 
 def center_on_target(motion, adet, target, frame_size, step_cm, deadband_frac,
-                     settle, max_steps, log, stop):
-    """Strafe left/right/up/down until the target box center hits the frame center."""
+                     settle, fresh_timeout, current_frame_number, max_steps, log, stop):
+    """Strafe left/right/up/down until the target box center hits the frame center.
+
+    Each iteration reads the box from a detection taken *after* the previous
+    strafe settled (see _fresh_find), so the servo never chases a stale box.
+    """
     w, h = frame_size
     cxf, cyf = w / 2.0, h / 2.0
     dbx, dby = w * deadband_frac, h * deadband_frac
     for i in range(max_steps):
         if stop.is_set():
             return False
-        det = _find_target(adet, target)
+        det = _fresh_find(adet, target, settle, fresh_timeout,
+                          current_frame_number, stop)
         if det is None:
             log("  lost target while centering")
             return False
@@ -254,16 +296,25 @@ def center_on_target(motion, adet, target, frame_size, step_cm, deadband_frac,
         # Vertical: target below center -> descend (and vice versa).
         if abs(ey) > dby:
             (motion.down if ey > 0 else motion.up)(step_cm)
-        time.sleep(settle)
     log("  centering hit max steps")
-    return _find_target(adet, target) is not None
+    det = _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop)
+    return det is not None
 
 
-def flash_led(server, r, g, b, seconds, log):
-    """single_fly_lamplight in flashing mode (32) for `seconds`."""
-    log(f"  flashing LED ({r},{g},{b}) mode=32 for {seconds}s")
-    server.single_fly_lamplight(r, g, b, int(seconds), 32)
-    # The drone runs the flash for `time` seconds; wait it out.
+def flash_led(server, r, g, b, seconds, mode, log):
+    """single_fly_lamplight for `seconds` using the chosen effect.
+
+    `mode` is one of LED_FLASH_MODES ("flash", "rainbow", "cycle"). For the
+    animated effects (rainbow/cycle) the drone runs its own palette and the
+    r/g/b colour is ignored.
+    """
+    mode_val = LED_FLASH_MODES.get(mode, LED_FLASH_MODES["flash"])
+    if mode == "flash":
+        log(f"  LED flash ({r},{g},{b}) mode={mode_val} for {seconds}s")
+    else:
+        log(f"  LED {mode} effect mode={mode_val} for {seconds}s (colour ignored)")
+    server.single_fly_lamplight(r, g, b, int(seconds), mode_val)
+    # The drone runs the effect for `time` seconds; wait it out.
     time.sleep(seconds)
 
 
@@ -282,6 +333,11 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
             return tuple(opts["cell"])
         return fr.width, fr.height
 
+    def current_frame_number():
+        with lock:
+            fr = frames.get(key)
+        return fr.frame_number if fr is not None else -1
+
     try:
         state["phase"] = "takeoff"
         log("[1] takeoff")
@@ -299,8 +355,9 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
         state["phase"] = f"search:{opts['target']}"
         log(f"[2] search for '{opts['target']}' "
             f"(turnright {opts['search_step']} deg steps)")
-        found = search_for_target(motion, adet, opts["target"],
-                                  opts["search_step"], opts["settle"], log, stop_event)
+        found = search_for_target(
+            motion, adet, opts["target"], opts["search_step"], opts["settle"],
+            opts["fresh_timeout"], current_frame_number, log, stop_event)
         if stop_event.is_set():
             raise _Aborted()
 
@@ -310,6 +367,7 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
             centered = center_on_target(
                 motion, adet, opts["target"], frame_size(),
                 opts["center_step"], opts["center_deadband"], opts["settle"],
+                opts["fresh_timeout"], current_frame_number,
                 opts["center_max_steps"], log, stop_event)
             if stop_event.is_set():
                 raise _Aborted()
@@ -317,7 +375,8 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
             if centered:
                 state["phase"] = "flash"
                 log("[4] LED flash")
-                flash_led(server, *opts["led_rgb"], opts["flash_seconds"], log)
+                flash_led(server, *opts["led_rgb"], opts["flash_seconds"],
+                          opts["led_mode"], log)
         else:
             log("  target not found after a full rotation")
 
@@ -379,7 +438,7 @@ def display_loop(key, frames, adet, lock, state, target, cell, stop_event):
     except ImportError:
         # Headless: log the phase + detections until the mission ends.
         while not stop_event.is_set():
-            det = _find_target(adet, target)
+            det = _pick_target(adet.latest_detections, target)
             print(f"[{key}] phase={state.get('phase')} "
                   f"target={'yes' if det else 'no'}", flush=True)
             time.sleep(1.0)
@@ -397,7 +456,7 @@ def display_loop(key, frames, adet, lock, state, target, cell, stop_event):
             # Frame-center crosshair (the centering target).
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255),
                            cv2.MARKER_CROSS, 24, 2)
-            det = _find_target(adet, target)
+            det = _pick_target(adet.latest_detections, target)
             if det is not None:
                 cx, cy = det.bbox.center
                 cv2.circle(img, (cx, cy), 6, (0, 0, 255), -1)
@@ -495,7 +554,9 @@ def check(opts):
     print(f"  1. single_fly_takeoff -> climb to {opts['height']} cm via get_plane_distance")
     print(f"  2. search: single_fly_turnright({opts['search_step']}) steps until '{opts['target']}'")
     print(f"  3. center: strafe until box center within {opts['center_deadband']:.0%} of frame")
-    print(f"  4. single_fly_lamplight(*{opts['led_rgb']}, {opts['flash_seconds']}, 32)")
+    _led_mode_val = LED_FLASH_MODES[opts["led_mode"]]
+    print(f"  4. single_fly_lamplight(*{opts['led_rgb']}, {opts['flash_seconds']}, "
+          f"{_led_mode_val})  [{opts['led_mode']}]")
     print("  5. retrace recorded moves in reverse, then single_fly_touchdown")
 
     # Self-test the retrace/inverse logic with a fake server (no hardware).
@@ -558,13 +619,23 @@ def main(argv=None):
     p.add_argument("--center-max-steps", type=int, default=15,
                    help="Max centering iterations (default 15)")
     p.add_argument("--settle", type=float, default=1.0,
-                   help="Seconds to wait after each move for the view/detector to "
-                        "settle (default 1.0)")
+                   help="Seconds to wait after each move for the video buffer to "
+                        "flush and the view to stabilize (default 1.0)")
+    p.add_argument("--fresh-timeout", type=float, default=2.0,
+                   help="Max seconds to wait for the detector to produce a detection "
+                        "from a post-move frame before acting (default 2.0)")
 
     p.add_argument("--flash-seconds", type=float, default=5.0,
-                   help="LED flash duration in seconds (default 5)")
+                   help="LED effect duration in seconds (default 5)")
+    p.add_argument("--led-mode", choices=list(LED_FLASH_MODES), default="flash",
+                   help="LED effect when the target is found: 'flash' blinks the "
+                        "--led-rgb colour (BLINK/32), 'rainbow' runs a seven-colour "
+                        "cycle (16), 'cycle' cycles R->G->B (4). Default flash.")
     p.add_argument("--led-rgb", nargs=3, type=int, default=[255, 0, 0],
-                   metavar=("R", "G", "B"), help="Flash color (default 255 0 0)")
+                   metavar=("R", "G", "B"),
+                   help="Flash colour as three 0-255 values, e.g. --led-rgb 0 255 0 "
+                        "for green (default 255 0 0 = red). Ignored for "
+                        "--led-mode rainbow/cycle, which use the drone's own palette.")
 
     p.add_argument("--connect-timeout", type=float, default=15.0,
                    help="Seconds to wait for the drone's heartbeat (default 15)")
@@ -590,7 +661,9 @@ def main(argv=None):
         "center_deadband": args.center_deadband,
         "center_max_steps": args.center_max_steps,
         "settle": args.settle,
+        "fresh_timeout": args.fresh_timeout,
         "flash_seconds": args.flash_seconds,
+        "led_mode": args.led_mode,
         "led_rgb": tuple(args.led_rgb),
         "connect_timeout": args.connect_timeout,
         "cell": args.cell,

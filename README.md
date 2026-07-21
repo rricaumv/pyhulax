@@ -164,7 +164,11 @@ detector reports the target class, strafes (`single_fly_left/right/up/down`) to
 put the target's box center on the frame center, flashes its LED
 (`single_fly_lamplight(..., mode=32)`) for 5 s, then returns home by retracing
 every recorded motion in reverse (inverse move, reverse order) and landing
-(`single_fly_touchdown`) — no reliance on absolute-coordinate APIs. Stock
+(`single_fly_touchdown`) — no reliance on absolute-coordinate APIs. Search and
+centering only act on a detection computed *after* the drone stopped moving
+(`AsyncDetector.wait_for_fresh_detection`), so a stale box from mid-rotation
+never triggers "found" or throws off centering (tune with `--settle` /
+`--fresh-timeout`). Stock
 YOLO/COCO has no `tank` class, so use a custom model or `--target person` to
 rehearse; `--check` prints the plan and self-tests the retrace logic without
 hardware.
@@ -177,9 +181,19 @@ python examples/object_detection_flight_demo.py \
 # Rehearse the full flight against a person with a stock model
 python examples/object_detection_flight_demo.py --ip 192.168.1.58 --target person
 
+# Rainbow flash on find; or a custom flash colour (three 0-255 values = R G B)
+python examples/object_detection_flight_demo.py --ip 192.168.1.58 --led-mode rainbow
+python examples/object_detection_flight_demo.py --ip 192.168.1.58 --led-rgb 0 255 0
+
 # Print the plan + verify retrace logic, no hardware
 python examples/object_detection_flight_demo.py --check
 ```
+
+The "found" flash (step 4) is set by `--led-mode`: `flash` (default) blinks the
+single `--led-rgb R G B` colour, `rainbow` runs the drone's seven-colour cycle,
+and `cycle` cycles red→green→blue. `--led-rgb` takes three 0-255 values (default
+`255 0 0` = red) and is ignored for `rainbow`/`cycle`, which use the drone's own
+palette.
 
 Configured defaults:
 
