@@ -157,6 +157,30 @@ python examples/object_detection_demo.py \
     --ips 192.168.1.58 192.168.1.70 --model yolov8s.pt --classes 0 2
 ```
 
+`examples/object_detection_flight_demo.py` adds flight to the detector: one drone
+takes off and climbs to a target ToF height (`get_plane_distance` +
+`single_fly_up/down`), rotates in steps (`single_fly_turnright`) until the
+detector reports the target class, strafes (`single_fly_left/right/up/down`) to
+put the target's box center on the frame center, flashes its LED
+(`single_fly_lamplight(..., mode=32)`) for 5 s, then returns home by retracing
+every recorded motion in reverse (inverse move, reverse order) and landing
+(`single_fly_touchdown`) — no reliance on absolute-coordinate APIs. Stock
+YOLO/COCO has no `tank` class, so use a custom model or `--target person` to
+rehearse; `--check` prints the plan and self-tests the retrace logic without
+hardware.
+
+```bash
+# Custom tank model
+python examples/object_detection_flight_demo.py \
+    --ip 192.168.1.58 --id 1 --model tank_yolov8.pt --target tank
+
+# Rehearse the full flight against a person with a stock model
+python examples/object_detection_flight_demo.py --ip 192.168.1.58 --target person
+
+# Print the plan + verify retrace logic, no hardware
+python examples/object_detection_flight_demo.py --check
+```
+
 Configured defaults:
 
 ```python
