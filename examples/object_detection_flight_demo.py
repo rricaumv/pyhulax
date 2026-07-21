@@ -204,7 +204,8 @@ def _pick_target(dets, target: str):
     return max(candidates, key=lambda d: d.bbox.area)
 
 
-def _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop):
+def _observe(adet, target, settle, fresh_timeout, current_frame_number, stop,
+             retries=0):
     """Find the target using a detection computed *after* the drone settled.
 
     The drone's video is buffered and inference lags, so `latest_detections`
@@ -212,13 +213,21 @@ def _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop)
     view, notes a freshly-decoded frame number, waits for the detector to catch
     up past it, and only then picks the target - so search/centering never act on
     a box from an orientation the drone has already left.
+
+    `retries` re-observes (without moving) through transient dropouts - a single
+    blurred/missed frame right after a strafe should not count as "target lost".
     """
-    if stop.is_set():
-        return None
-    time.sleep(settle)                 # let the video buffer flush + view stabilize
-    baseline = current_frame_number()  # a frame decoded after the move settled
-    dets = adet.wait_for_fresh_detection(baseline, timeout=fresh_timeout)
-    return _pick_target(dets, target)
+    for attempt in range(retries + 1):
+        if stop.is_set():
+            return None
+        if attempt == 0:
+            time.sleep(settle)  # settle once after the move; retries just re-look
+        baseline = current_frame_number()  # a frame decoded after the move settled
+        dets = adet.wait_for_fresh_detection(baseline, timeout=fresh_timeout)
+        det = _pick_target(dets, target)
+        if det is not None:
+            return det
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -250,55 +259,112 @@ def search_for_target(motion, adet, target, step_deg, settle, fresh_timeout,
     post-turn frame has been detected - do we decide whether the target is in
     view, so we never lock onto a box seen mid-rotation.
     """
-    if _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop):
+    if _observe(adet, target, settle, fresh_timeout, current_frame_number, stop):
         log("  target already in view")
         return True
     turned = 0
     while turned < 360 and not stop.is_set():
         motion.turn_right(step_deg)  # blocking: the drone stops before we look
         turned += step_deg
-        det = _fresh_find(adet, target, settle, fresh_timeout,
-                          current_frame_number, stop)
+        det = _observe(adet, target, settle, fresh_timeout,
+                       current_frame_number, stop)
         log(f"  turned {turned} deg -> {'FOUND' if det else 'no target'}")
         if det is not None:
             return True
     return False
 
 
-def center_on_target(motion, adet, target, frame_size, step_cm, deadband_frac,
-                     settle, fresh_timeout, current_frame_number, max_steps, log, stop):
-    """Strafe left/right/up/down until the target box center hits the frame center.
+def center_on_target(motion, adet, target, frame_size, max_step, min_step,
+                     deadband_frac, settle, fresh_timeout, current_frame_number,
+                     max_steps, retries, log, stop):
+    """Strafe until the target box center hits the frame center - robustly.
 
-    Each iteration reads the box from a detection taken *after* the previous
-    strafe settled (see _fresh_find), so the servo never chases a stale box.
+    Strategy (built to not lose the target):
+
+    * One axis per iteration - correct the larger (normalized) error, then
+      re-observe. Smaller net moves keep the target in frame vs. diagonal jumps.
+    * Adaptive gain - unknown cm-per-pixel is learned from each move (how many
+      pixels the box shifted per cm strafed) and used to size the next move, so
+      it converges without the overshoot that ejects the target near an edge.
+      Until it's learned, a conservative calibration step is used.
+    * Retry through dropouts - a single blurred/missed frame after a strafe is
+      re-observed (see _observe retries), not treated as "lost".
+    * Back-off recovery - if the target really leaves the frame after a strafe,
+      the strafe is undone to bring it back before giving up.
+
+    Every move (including recovery) is recorded by MotionLog, so the retrace-home
+    step still undoes the net displacement.
     """
     w, h = frame_size
     cxf, cyf = w / 2.0, h / 2.0
     dbx, dby = w * deadband_frac, h * deadband_frac
-    for i in range(max_steps):
+    # pixels-per-cm gain learned per axis (None until measured).
+    gain = {"x": None, "y": None}
+
+    def observe():
+        return _observe(adet, target, settle, fresh_timeout,
+                        current_frame_number, stop, retries=retries)
+
+    det = observe()
+    if det is None:
+        log("  lost target while centering (not visible at start)")
+        return False
+
+    for _ in range(max_steps):
         if stop.is_set():
-            return False
-        det = _fresh_find(adet, target, settle, fresh_timeout,
-                          current_frame_number, stop)
-        if det is None:
-            log("  lost target while centering")
             return False
         cx, cy = det.bbox.center
         ex, ey = cx - cxf, cy - cyf  # >0 => target right/below center
         log(f"  center err = ({ex:+.0f}, {ey:+.0f}) px  "
-            f"deadband=({dbx:.0f}, {dby:.0f})")
+            f"deadband=({dbx:.0f}, {dby:.0f})  gain={gain}")
         if abs(ex) <= dbx and abs(ey) <= dby:
             log("  centered")
             return True
-        # Horizontal: target right of center -> strafe right (and vice versa).
-        if abs(ex) > dbx:
-            (motion.right if ex > 0 else motion.left)(step_cm)
-        # Vertical: target below center -> descend (and vice versa).
-        if abs(ey) > dby:
-            (motion.down if ey > 0 else motion.up)(step_cm)
+
+        # Correct the axis with the larger normalized error (one move / iter).
+        axis = "x" if (abs(ex) / (w / 2.0)) >= (abs(ey) / (h / 2.0)) else "y"
+        err = ex if axis == "x" else ey
+
+        g = gain[axis]
+        if g and g > 1e-6:
+            step = abs(err) / g            # cm needed to null this pixel error
+        else:
+            step = 0.5 * max_step          # calibration move (gain unknown yet)
+        step = max(min_step, min(max_step, step))
+
+        # Issue the single strafe; remember how to undo it for recovery.
+        if axis == "x":
+            forward, undo = (motion.right, motion.left) if err > 0 else (motion.left, motion.right)
+        else:
+            forward, undo = (motion.down, motion.up) if err > 0 else (motion.up, motion.down)
+        forward(step)
+        moved_cm = round(step)
+
+        new = observe()
+        if new is None:
+            log("  target lost after strafe - backing off to recover")
+            undo(step)
+            gain[axis] = None              # our model misfired; recalibrate
+            new = observe()
+            if new is None:
+                log("  lost target while centering")
+                return False
+            det = new
+            continue
+
+        # Learn the gain: how many pixels did the box move per cm strafed?
+        ncx, ncy = new.bbox.center
+        nerr = (ncx - cxf) if axis == "x" else (ncy - cyf)
+        delta = abs(err) - abs(nerr)       # >0 => moved toward center
+        if moved_cm > 0 and delta > 2:
+            observed = delta / moved_cm
+            gain[axis] = observed if gain[axis] is None else 0.5 * gain[axis] + 0.5 * observed
+        elif delta < -2:
+            gain[axis] = None              # overshoot/drift: drop the stale gain
+        det = new
+
     log("  centering hit max steps")
-    det = _fresh_find(adet, target, settle, fresh_timeout, current_frame_number, stop)
-    return det is not None
+    return abs(det.bbox.center[0] - cxf) <= dbx and abs(det.bbox.center[1] - cyf) <= dby
 
 
 def flash_led(server, r, g, b, seconds, mode, log):
@@ -366,9 +432,10 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
             log("[3] center on target")
             centered = center_on_target(
                 motion, adet, opts["target"], frame_size(),
-                opts["center_step"], opts["center_deadband"], opts["settle"],
-                opts["fresh_timeout"], current_frame_number,
-                opts["center_max_steps"], log, stop_event)
+                opts["center_step"], opts["center_min_step"],
+                opts["center_deadband"], opts["settle"], opts["fresh_timeout"],
+                current_frame_number, opts["center_max_steps"],
+                opts["center_retries"], log, stop_event)
             if stop_event.is_set():
                 raise _Aborted()
 
@@ -612,12 +679,19 @@ def main(argv=None):
     p.add_argument("--search-step", type=int, default=30,
                    help="Yaw step per search turn, degrees (default 30)")
     p.add_argument("--center-step", type=int, default=20,
-                   help="Strafe step while centering, cm (default 20)")
+                   help="Max strafe per centering move, cm (default 20). Moves are "
+                        "sized adaptively from a learned pixels-per-cm gain and "
+                        "capped here to avoid overshooting the target out of frame.")
+    p.add_argument("--center-min-step", type=int, default=6,
+                   help="Min strafe per centering move, cm (default 6)")
     p.add_argument("--center-deadband", type=float, default=0.08,
                    help="Centered when box center within this fraction of the frame "
                         "(default 0.08)")
-    p.add_argument("--center-max-steps", type=int, default=15,
-                   help="Max centering iterations (default 15)")
+    p.add_argument("--center-max-steps", type=int, default=25,
+                   help="Max centering iterations (default 25; one axis per iter)")
+    p.add_argument("--center-retries", type=int, default=3,
+                   help="Re-observations through a transient detection dropout before "
+                        "treating the target as lost (default 3)")
     p.add_argument("--settle", type=float, default=1.0,
                    help="Seconds to wait after each move for the video buffer to "
                         "flush and the view to stabilize (default 1.0)")
@@ -658,8 +732,10 @@ def main(argv=None):
         "climb_step": args.climb_step,
         "search_step": args.search_step,
         "center_step": args.center_step,
+        "center_min_step": args.center_min_step,
         "center_deadband": args.center_deadband,
         "center_max_steps": args.center_max_steps,
+        "center_retries": args.center_retries,
         "settle": args.settle,
         "fresh_timeout": args.fresh_timeout,
         "flash_seconds": args.flash_seconds,

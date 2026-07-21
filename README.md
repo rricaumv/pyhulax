@@ -168,7 +168,11 @@ every recorded motion in reverse (inverse move, reverse order) and landing
 centering only act on a detection computed *after* the drone stopped moving
 (`AsyncDetector.wait_for_fresh_detection`), so a stale box from mid-rotation
 never triggers "found" or throws off centering (tune with `--settle` /
-`--fresh-timeout`). Stock
+`--fresh-timeout`). Centering corrects one axis at a time, sizes each strafe
+from a pixels-per-cm gain it learns on the fly (so it converges without
+overshooting the target out of frame), retries through transient detection
+dropouts (`--center-retries`), and backs off a strafe that loses the target
+rather than giving up. Stock
 YOLO/COCO has no `tank` class, so use a custom model or `--target person` to
 rehearse; `--check` prints the plan and self-tests the retrace logic without
 hardware.
