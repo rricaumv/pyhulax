@@ -10,8 +10,9 @@ Unlike ``object_detection_demo.py`` (video only), this one flies. The mission:
                   reports the target class (e.g. "tank")
   3. center       strafe single_fly_left/right/up/down until the target box
                   center matches the frame center
-  4. LED flash    single_fly_lamplight(r, g, b, time, mode=32)  (32 = flashing)
-                  for 5 s
+  4. LED flash    single_fly_lamplight(r, g, b, time, mode) for 5 s -
+                  --led-mode flash (blink --led-rgb colour, 32), rainbow
+                  (seven-colour cycle, 16), or cycle (R->G->B, 4)
   5. return home  every executed motion is recorded and retraced in reverse
                   (inverse move, reverse order), then single_fly_touchdown().
                   This avoids relying on the ambiguous absolute-coordinate APIs.
@@ -33,9 +34,13 @@ Usage:
     python examples/object_detection_flight_demo.py \
         --ip 192.168.1.58 --id 1 --model tank_yolov8.pt --target tank
 
-    # Rehearse with a stock model against a person
+    # Rehearse with a stock model against a person, rainbow flash on find
     python examples/object_detection_flight_demo.py \
-        --ip 192.168.1.58 --id 1 --target person
+        --ip 192.168.1.58 --id 1 --target person --led-mode rainbow
+
+    # Custom flash colour (green) - three 0-255 values
+    python examples/object_detection_flight_demo.py \
+        --ip 192.168.1.58 --id 1 --led-rgb 0 255 0
 
     # Print the plan + verify the retrace/inverse logic, no hardware
     python examples/object_detection_flight_demo.py --check
@@ -67,7 +72,17 @@ import time  # noqa: E402
 import traceback  # noqa: E402
 
 from pyhulax import DroneAPI  # noqa: E402
+from pyhulax.core import LEDMode  # noqa: E402
 from pyhulax.core.exceptions import DroneConnectionError  # noqa: E402
+
+
+# LED effect for the "target found" flash (step 4). single_fly_lamplight takes a
+# raw mode byte; these are the SDK's LEDMode values.
+LED_FLASH_MODES = {
+    "flash": int(LEDMode.BLINK),          # 32 - blink the single --led-rgb colour
+    "rainbow": int(LEDMode.SEVEN_COLOR),  # 16 - multi-colour rainbow cycle
+    "cycle": int(LEDMode.RGB_CYCLE),      # 4  - cycle red -> green -> blue
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -286,11 +301,20 @@ def center_on_target(motion, adet, target, frame_size, step_cm, deadband_frac,
     return det is not None
 
 
-def flash_led(server, r, g, b, seconds, log):
-    """single_fly_lamplight in flashing mode (32) for `seconds`."""
-    log(f"  flashing LED ({r},{g},{b}) mode=32 for {seconds}s")
-    server.single_fly_lamplight(r, g, b, int(seconds), 32)
-    # The drone runs the flash for `time` seconds; wait it out.
+def flash_led(server, r, g, b, seconds, mode, log):
+    """single_fly_lamplight for `seconds` using the chosen effect.
+
+    `mode` is one of LED_FLASH_MODES ("flash", "rainbow", "cycle"). For the
+    animated effects (rainbow/cycle) the drone runs its own palette and the
+    r/g/b colour is ignored.
+    """
+    mode_val = LED_FLASH_MODES.get(mode, LED_FLASH_MODES["flash"])
+    if mode == "flash":
+        log(f"  LED flash ({r},{g},{b}) mode={mode_val} for {seconds}s")
+    else:
+        log(f"  LED {mode} effect mode={mode_val} for {seconds}s (colour ignored)")
+    server.single_fly_lamplight(r, g, b, int(seconds), mode_val)
+    # The drone runs the effect for `time` seconds; wait it out.
     time.sleep(seconds)
 
 
@@ -351,7 +375,8 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
             if centered:
                 state["phase"] = "flash"
                 log("[4] LED flash")
-                flash_led(server, *opts["led_rgb"], opts["flash_seconds"], log)
+                flash_led(server, *opts["led_rgb"], opts["flash_seconds"],
+                          opts["led_mode"], log)
         else:
             log("  target not found after a full rotation")
 
@@ -529,7 +554,9 @@ def check(opts):
     print(f"  1. single_fly_takeoff -> climb to {opts['height']} cm via get_plane_distance")
     print(f"  2. search: single_fly_turnright({opts['search_step']}) steps until '{opts['target']}'")
     print(f"  3. center: strafe until box center within {opts['center_deadband']:.0%} of frame")
-    print(f"  4. single_fly_lamplight(*{opts['led_rgb']}, {opts['flash_seconds']}, 32)")
+    _led_mode_val = LED_FLASH_MODES[opts["led_mode"]]
+    print(f"  4. single_fly_lamplight(*{opts['led_rgb']}, {opts['flash_seconds']}, "
+          f"{_led_mode_val})  [{opts['led_mode']}]")
     print("  5. retrace recorded moves in reverse, then single_fly_touchdown")
 
     # Self-test the retrace/inverse logic with a fake server (no hardware).
@@ -599,9 +626,16 @@ def main(argv=None):
                         "from a post-move frame before acting (default 2.0)")
 
     p.add_argument("--flash-seconds", type=float, default=5.0,
-                   help="LED flash duration in seconds (default 5)")
+                   help="LED effect duration in seconds (default 5)")
+    p.add_argument("--led-mode", choices=list(LED_FLASH_MODES), default="flash",
+                   help="LED effect when the target is found: 'flash' blinks the "
+                        "--led-rgb colour (BLINK/32), 'rainbow' runs a seven-colour "
+                        "cycle (16), 'cycle' cycles R->G->B (4). Default flash.")
     p.add_argument("--led-rgb", nargs=3, type=int, default=[255, 0, 0],
-                   metavar=("R", "G", "B"), help="Flash color (default 255 0 0)")
+                   metavar=("R", "G", "B"),
+                   help="Flash colour as three 0-255 values, e.g. --led-rgb 0 255 0 "
+                        "for green (default 255 0 0 = red). Ignored for "
+                        "--led-mode rainbow/cycle, which use the drone's own palette.")
 
     p.add_argument("--connect-timeout", type=float, default=15.0,
                    help="Seconds to wait for the drone's heartbeat (default 15)")
@@ -629,6 +663,7 @@ def main(argv=None):
         "settle": args.settle,
         "fresh_timeout": args.fresh_timeout,
         "flash_seconds": args.flash_seconds,
+        "led_mode": args.led_mode,
         "led_rgb": tuple(args.led_rgb),
         "connect_timeout": args.connect_timeout,
         "cell": args.cell,

@@ -181,9 +181,19 @@ python examples/object_detection_flight_demo.py \
 # Rehearse the full flight against a person with a stock model
 python examples/object_detection_flight_demo.py --ip 192.168.1.58 --target person
 
+# Rainbow flash on find; or a custom flash colour (three 0-255 values = R G B)
+python examples/object_detection_flight_demo.py --ip 192.168.1.58 --led-mode rainbow
+python examples/object_detection_flight_demo.py --ip 192.168.1.58 --led-rgb 0 255 0
+
 # Print the plan + verify retrace logic, no hardware
 python examples/object_detection_flight_demo.py --check
 ```
+
+The "found" flash (step 4) is set by `--led-mode`: `flash` (default) blinks the
+single `--led-rgb R G B` colour, `rainbow` runs the drone's seven-colour cycle,
+and `cycle` cycles red→green→blue. `--led-rgb` takes three 0-255 values (default
+`255 0 0` = red) and is ignored for `rainbow`/`cycle`, which use the drone's own
+palette.
 
 Configured defaults:
 
