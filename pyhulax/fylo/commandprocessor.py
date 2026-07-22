@@ -586,8 +586,9 @@ class SFTurnLeftCP(CommandProcessor):
         distance_x = int(data.get("x", 0))
         distance_y = int(data.get("y", 0))
         distance_z = int(data.get("z", 0))
-        # yaw: rotation angle in degrees (positive = CCW/left)
-        yaw_angle = data.get("angle", 0)
+        # yaw: positive = CCW/left on this airframe. Turn-*left* always yaws CCW,
+        # so use the magnitude regardless of the sign the caller passed.
+        yaw_angle = abs(int(data.get("angle", 0)))
 
         msg = self._mav.formation_cmd_encode(
             param1,
@@ -632,8 +633,13 @@ class SFTurnRightCP(CommandProcessor):
         distance_x = int(data.get("x", 0))
         distance_y = int(data.get("y", 0))
         distance_z = int(data.get("z", 0))
-        # yaw: rotation angle in degrees (negative = CW/right, caller handles sign)
-        yaw_angle = data.get("angle", 0)
+        # yaw: positive = CCW/left on this airframe, so turn-*right* must send a
+        # NEGATIVE (CW) yaw. Previously this passed the raw angle, so a positive
+        # magnitude (e.g. single_fly_turnright(15)) yawed left - identical to
+        # turn-left - which also broke retrace (the turn-left inverse repeated the
+        # turn instead of undoing it). Force CW by magnitude, regardless of the
+        # sign the caller passed.
+        yaw_angle = -abs(int(data.get("angle", 0)))
 
         msg = self._mav.formation_cmd_encode(
             param1,
