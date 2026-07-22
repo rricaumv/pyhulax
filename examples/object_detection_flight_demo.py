@@ -275,8 +275,8 @@ def search_for_target(motion, adet, target, step_deg, settle, fresh_timeout,
 
 
 def center_on_target(motion, adet, target, frame_size, max_step, min_step,
-                     deadband_frac, settle, fresh_timeout, current_frame_number,
-                     max_steps, retries, log, stop):
+                     climb_step, deadband_frac, settle, fresh_timeout,
+                     current_frame_number, max_steps, retries, log, stop):
     """Strafe until the target box center hits the frame center - robustly.
 
     Strategy (built to not lose the target):
@@ -325,12 +325,15 @@ def center_on_target(motion, adet, target, frame_size, max_step, min_step,
         axis = "x" if (abs(ex) / (w / 2.0)) >= (abs(ey) / (h / 2.0)) else "y"
         err = ex if axis == "x" else ey
 
+        # Vertical moves change altitude, so cap them lower than lateral strafes.
+        axis_max = climb_step if axis == "y" else max_step
+        lo = min(min_step, axis_max)
         g = gain[axis]
         if g and g > 1e-6:
             step = abs(err) / g            # cm needed to null this pixel error
         else:
-            step = 0.5 * max_step          # calibration move (gain unknown yet)
-        step = max(min_step, min(max_step, step))
+            step = 0.5 * axis_max          # calibration move (gain unknown yet)
+        step = max(lo, min(axis_max, step))
 
         # Issue the single strafe; remember how to undo it for recovery.
         if axis == "x":
@@ -433,9 +436,9 @@ def run_mission(server, adet, frames, key, lock, state, opts, stop_event, log):
             centered = center_on_target(
                 motion, adet, opts["target"], frame_size(),
                 opts["center_step"], opts["center_min_step"],
-                opts["center_deadband"], opts["settle"], opts["fresh_timeout"],
-                current_frame_number, opts["center_max_steps"],
-                opts["center_retries"], log, stop_event)
+                opts["center_climb_step"], opts["center_deadband"],
+                opts["settle"], opts["fresh_timeout"], current_frame_number,
+                opts["center_max_steps"], opts["center_retries"], log, stop_event)
             if stop_event.is_set():
                 raise _Aborted()
 
@@ -676,12 +679,17 @@ def main(argv=None):
     p.add_argument("--climb-step", type=int, default=30,
                    help="Max single up/down nudge while climbing, cm (default 30)")
 
-    p.add_argument("--search-step", type=int, default=30,
-                   help="Yaw step per search turn, degrees (default 30)")
+    p.add_argument("--search-step", type=int, default=15,
+                   help="Yaw step per search turn, degrees (default 15)")
     p.add_argument("--center-step", type=int, default=20,
-                   help="Max strafe per centering move, cm (default 20). Moves are "
-                        "sized adaptively from a learned pixels-per-cm gain and "
-                        "capped here to avoid overshooting the target out of frame.")
+                   help="Max lateral strafe per centering move, cm (default 20). "
+                        "Moves are sized adaptively from a learned pixels-per-cm "
+                        "gain and capped here to avoid overshooting the target out "
+                        "of frame.")
+    p.add_argument("--center-climb-step", type=int, default=10,
+                   help="Max vertical (up/down) move per centering step, cm "
+                        "(default 10). Kept smaller than --center-step since it "
+                        "changes altitude.")
     p.add_argument("--center-min-step", type=int, default=6,
                    help="Min strafe per centering move, cm (default 6)")
     p.add_argument("--center-deadband", type=float, default=0.08,
@@ -732,6 +740,7 @@ def main(argv=None):
         "climb_step": args.climb_step,
         "search_step": args.search_step,
         "center_step": args.center_step,
+        "center_climb_step": args.center_climb_step,
         "center_min_step": args.center_min_step,
         "center_deadband": args.center_deadband,
         "center_max_steps": args.center_max_steps,

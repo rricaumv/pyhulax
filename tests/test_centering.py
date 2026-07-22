@@ -97,7 +97,7 @@ def _run_center(sim, adet, *, retries=3, max_steps=40):
     motion = _FakeMotion(sim)
     ok = demo.center_on_target(
         motion, adet, "tank", (640, 480),
-        20, 6, 0.08, 0.0, 0.1, lambda: 0, max_steps, retries,
+        20, 6, 10, 0.08, 0.0, 0.1, lambda: 0, max_steps, retries,
         lambda *_: None, threading.Event(),
     )
     return ok, motion
