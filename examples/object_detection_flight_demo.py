@@ -23,16 +23,17 @@ crosshair, and the current mission phase.
 
 Requires the video + YOLO deps:  pip install "pyhulax[video]" ultralytics
 
-Note on the target class: stock YOLO/COCO models do NOT have a "tank" class. Use a
-model trained on your target (``--model my_tank.pt``), or pass ``--target person``
-(or any COCO label) to rehearse the whole flight with a stock model. ``--target any``
-locks onto the largest detection of any class.
+Note on the target class: stock YOLO/COCO models do NOT have a "tank" class. A
+ready-made tank model ships at ``examples/models/tank21jul.pt`` - pass it with
+``--model examples/models/tank21jul.pt --target tank``. Or train your own, or
+pass ``--target person`` (any COCO label) to rehearse with a stock model.
+``--target any`` locks onto the largest detection of any class.
 
 Usage:
 
-    # Real flight: find a tank with a custom model, center, flash, come home
+    # Real flight: find a tank with the bundled model, center, flash, come home
     python examples/object_detection_flight_demo.py \
-        --ip 192.168.1.58 --id 1 --model tank_yolov8.pt --target tank
+        --ip 192.168.1.58 --id 1 --model examples/models/tank21jul.pt --target tank
 
     # Rehearse with a stock model against a person, rainbow flash on find
     python examples/object_detection_flight_demo.py \
@@ -83,6 +84,11 @@ LED_FLASH_MODES = {
     "rainbow": int(LEDMode.SEVEN_COLOR),  # 16 - multi-colour rainbow cycle
     "cycle": int(LEDMode.RGB_CYCLE),      # 4  - cycle red -> green -> blue
 }
+
+# Bundled tank model (ships in the repo), resolved so it works from any cwd.
+# Falls back to the stock name if it's ever missing.
+_BUNDLED_TANK_MODEL = os.path.join(_REPO_ROOT, "examples", "models", "tank21jul.pt")
+DEFAULT_MODEL = _BUNDLED_TANK_MODEL if os.path.isfile(_BUNDLED_TANK_MODEL) else "yolov8n.pt"
 
 
 # --------------------------------------------------------------------------- #
@@ -663,9 +669,10 @@ def main(argv=None):
     p.add_argument("--target", default="tank",
                    help="Target class label to find (default 'tank'; 'any' = "
                         "largest detection of any class)")
-    p.add_argument("--model", default="yolov8n.pt",
-                   help="YOLO model path/name (default yolov8n.pt; stock COCO has "
-                        "no 'tank' - use a custom model or --target person)")
+    p.add_argument("--model", default=DEFAULT_MODEL,
+                   help="YOLO model path/name (default: bundled "
+                        "examples/models/tank21jul.pt for 'tank'; pass a stock model "
+                        "like yolov8n.pt with --target person to rehearse)")
     p.add_argument("--confidence", type=float, default=0.25,
                    help="Detection confidence threshold 0-1 (default 0.25)")
     p.add_argument("--classes", nargs="+", type=int, default=None, metavar="ID",

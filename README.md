@@ -176,12 +176,13 @@ transient detection dropouts (`--center-retries`), and backs off a strafe that
 loses the target rather than giving up. Stock
 YOLO/COCO has no `tank` class, so use a custom model or `--target person` to
 rehearse; `--check` prints the plan and self-tests the retrace logic without
-hardware.
+hardware. A ready-made tank model ships at `examples/models/tank21jul.pt`
+(`--target tank`).
 
 ```bash
-# Custom tank model
+# Bundled tank model
 python examples/object_detection_flight_demo.py \
-    --ip 192.168.1.58 --id 1 --model tank_yolov8.pt --target tank
+    --ip 192.168.1.58 --id 1 --model examples/models/tank21jul.pt --target tank
 
 # Rehearse the full flight against a person with a stock model
 python examples/object_detection_flight_demo.py --ip 192.168.1.58 --target person
