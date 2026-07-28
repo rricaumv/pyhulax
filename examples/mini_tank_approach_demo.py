@@ -491,12 +491,20 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
 # --------------------------------------------------------------------------- #
 # Video pipeline + display
 # --------------------------------------------------------------------------- #
-def start_stream(drone, key, detector, frames, lock, log):
-    from pyhulax.video import AsyncDetector
+def start_stream(drone, key, detector, frames, lock, state, log):
+    from pyhulax.video import AsyncDetector, DrawDetections
 
     drone.set_video_stream(True)
     stream = drone.create_video_stream()
     adet = AsyncDetector(detector)
+    draw = DrawDetections()  # draws the detector's original YOLO boxes
+
+    def _draw_unless_centering(frame):
+        # Same box rendering as the other demos, but suppressed during the
+        # centering phase so only the crosshair shows.
+        if not str(state.get("phase", "")).startswith("center"):
+            return draw(frame)
+        return frame
 
     def _capture(frame):
         try:
@@ -506,23 +514,12 @@ def start_stream(drone, key, detector, frames, lock, log):
             pass
         return frame
 
-    stream.add_callback(adet)       # off-thread detection (attaches detections)
-    stream.add_callback(_capture)   # stash the frame; boxes are drawn at display
+    stream.add_callback(adet)                  # off-thread detection
+    stream.add_callback(_draw_unless_centering)  # original YOLO boxes (not while centering)
+    stream.add_callback(_capture)              # stash annotated frame for display
     stream.start()
     log(f"[{key}] detection stream started")
     return stream, adet
-
-
-def _draw_yolo_box(cv2, img, det, dist=None):
-    """Draw the detector's original bounding box + label (and distance if known)."""
-    x1, y1, x2, y2 = det.bbox.to_xyxy()
-    color = getattr(det, "color", (0, 255, 0))
-    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-    label = f"{det.label} {det.confidence:.2f}"
-    if dist is not None:
-        label += f"  ~{dist:.0f}cm"
-    cv2.putText(img, label, (x1, max(12, y1 - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
 def display_loop(key, frames, adet, lock, state, opts, stop_event):
@@ -544,23 +541,23 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
         with lock:
             fr = frames.get(key)
         if fr is not None:
-            # Draw on a copy so the detector never sees our overlays.
-            img = fr.image.copy()
+            # The YOLO box is already drawn on the frame by the DrawDetections
+            # callback (except during centering). Here we only add overlays.
+            img = fr.image
             h, w = img.shape[:2]
             phase = state.get("phase", "")
             centering = phase.startswith("center")
 
-            # During centering show ONLY the crosshair (no box); otherwise draw
-            # the detector's original YOLO bounding box(es).
+            # Distance label next to the tank (no box; the box is already drawn).
             if not centering:
-                dets = list(fr.detections or [])
-                tank = _pick_target(dets, target)
-                for d in dets:
-                    dist = None
-                    if d is tank:
-                        dist = estimate_horizontal_distance_cm(
-                            d, w, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
-                    _draw_yolo_box(cv2, img, d, dist)
+                tank = _pick_target(fr.detections or [], target)
+                if tank is not None:
+                    cx, cy = tank.bbox.center
+                    dist = estimate_horizontal_distance_cm(
+                        tank, w, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
+                    if dist is not None:
+                        cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
             cv2.putText(img, f"phase: {phase or '-'}",
@@ -602,7 +599,7 @@ def run(opts):
     key = f"D{opts['id']}"
 
     try:
-        stream, adet = start_stream(drone, key, detector, frames, lock, log)
+        stream, adet = start_stream(drone, key, detector, frames, lock, state, log)
     except Exception as exc:  # noqa: BLE001
         drone.disconnect()
         raise SystemExit(f"could not start detection stream: {exc}")
