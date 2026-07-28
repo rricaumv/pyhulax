@@ -94,6 +94,21 @@ def test_detections_report_their_source_frame_number():
         adet.stop()
 
 
+def test_reports_the_frame_size_detections_were_computed_on():
+    det = _FakeDetector(delay=0.02)
+    adet = AsyncDetector(det)
+    try:
+        assert adet.latest_detection_frame_size is None  # nothing yet
+        img = np.zeros((120, 160, 3), dtype=np.uint8)  # h=120, w=160
+        adet(_FakeFrame(1, img))
+        deadline = time.time() + 2.0
+        while adet.latest_detection_frame_number < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        assert adet.latest_detection_frame_size == (160, 120)  # (width, height)
+    finally:
+        adet.stop()
+
+
 def test_wait_for_fresh_detection_blocks_until_a_newer_frame():
     det = _FakeDetector(delay=0.02)
     adet = AsyncDetector(det)

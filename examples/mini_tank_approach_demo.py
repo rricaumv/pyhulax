@@ -198,17 +198,25 @@ def _focal_px(frame_w: float, hfov_deg: float) -> float:
     return frame_w / (2.0 * math.tan(math.radians(hfov_deg) / 2.0))
 
 
-def estimate_horizontal_distance_cm(det, frame_w, hfov_deg, tank_size_cm, tilt_deg):
-    """Rough horizontal distance (cm) to the tank from its apparent box size.
+def _distance_from_apparent(apparent_px, frame_w, hfov_deg, tank_size_cm, tilt_deg):
+    """Horizontal distance (cm) from an apparent size, frame width and geometry.
 
     slant = real_size * focal_px / apparent_px  (pinhole, size-from-range)
     horizontal = slant * cos(tilt)              (camera tilted `tilt` below level)
+
+    apparent_px and frame_w must be in the same pixel space (a uniform scale
+    cancels, so this is invariant to the display/detection resolution).
     """
-    apparent = max(det.bbox.width, det.bbox.height)
-    if apparent <= 0:
+    if apparent_px <= 0:
         return None
-    slant = tank_size_cm * _focal_px(frame_w, hfov_deg) / apparent
+    slant = tank_size_cm * _focal_px(frame_w, hfov_deg) / apparent_px
     return slant * math.cos(math.radians(tilt_deg))
+
+
+def estimate_horizontal_distance_cm(det, frame_w, hfov_deg, tank_size_cm, tilt_deg):
+    """Rough horizontal distance (cm) to the tank from its apparent box size."""
+    return _distance_from_apparent(max(det.bbox.width, det.bbox.height),
+                                   frame_w, hfov_deg, tank_size_cm, tilt_deg)
 
 
 # --------------------------------------------------------------------------- #
@@ -513,9 +521,12 @@ def start_stream(drone, key, detector, frames, lock, log):
     return stream, adet
 
 
-def _draw_yolo_box(cv2, img, det, dist=None):
-    """Draw the detector's original bounding box + label (and distance if known)."""
+def _draw_yolo_box(cv2, img, det, sx, sy, dist=None):
+    """Draw the detector's original bounding box + label, scaled from the
+    detection's pixel space (sx, sy) onto the display image."""
     x1, y1, x2, y2 = det.bbox.to_xyxy()
+    x1, x2 = int(round(x1 * sx)), int(round(x2 * sx))
+    y1, y2 = int(round(y1 * sy)), int(round(y2 * sy))
     color = getattr(det, "color", (0, 255, 0))
     cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
     label = f"{det.label} {det.confidence:.2f}"
@@ -551,16 +562,24 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
             centering = phase.startswith("center")
 
             # During centering show ONLY the crosshair (no box); otherwise draw
-            # the detector's original YOLO bounding box(es).
+            # the detector's original YOLO bounding box(es). Detections may have
+            # been computed on a frame of a different size than this one (the
+            # stream can change resolution after start), so scale their pixel
+            # space to the display image - otherwise the box looks scaled/offset.
             if not centering:
-                dets = list(fr.detections or [])
+                dets = list(adet.latest_detections)
+                src = adet.latest_detection_frame_size
+                sx = w / src[0] if src and src[0] else 1.0
+                sy = h / src[1] if src and src[1] else 1.0
                 tank = _pick_target(dets, target)
                 for d in dets:
                     dist = None
                     if d is tank:
-                        dist = estimate_horizontal_distance_cm(
-                            d, w, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
-                    _draw_yolo_box(cv2, img, d, dist)
+                        apparent = max(d.bbox.width * sx, d.bbox.height * sy)
+                        dist = _distance_from_apparent(
+                            apparent, w, opts["hfov"], opts["tank_size_cm"],
+                            opts["tilt_deg"])
+                    _draw_yolo_box(cv2, img, d, sx, sy, dist)
 
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
             cv2.putText(img, f"phase: {phase or '-'}",
