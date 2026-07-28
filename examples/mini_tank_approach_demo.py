@@ -198,25 +198,17 @@ def _focal_px(frame_w: float, hfov_deg: float) -> float:
     return frame_w / (2.0 * math.tan(math.radians(hfov_deg) / 2.0))
 
 
-def _distance_from_apparent(apparent_px, frame_w, hfov_deg, tank_size_cm, tilt_deg):
-    """Horizontal distance (cm) from an apparent size, frame width and geometry.
+def estimate_horizontal_distance_cm(det, frame_w, hfov_deg, tank_size_cm, tilt_deg):
+    """Rough horizontal distance (cm) to the tank from its apparent box size.
 
     slant = real_size * focal_px / apparent_px  (pinhole, size-from-range)
     horizontal = slant * cos(tilt)              (camera tilted `tilt` below level)
-
-    apparent_px and frame_w must be in the same pixel space (a uniform scale
-    cancels, so this is invariant to the display/detection resolution).
     """
-    if apparent_px <= 0:
+    apparent = max(det.bbox.width, det.bbox.height)
+    if apparent <= 0:
         return None
-    slant = tank_size_cm * _focal_px(frame_w, hfov_deg) / apparent_px
+    slant = tank_size_cm * _focal_px(frame_w, hfov_deg) / apparent
     return slant * math.cos(math.radians(tilt_deg))
-
-
-def estimate_horizontal_distance_cm(det, frame_w, hfov_deg, tank_size_cm, tilt_deg):
-    """Rough horizontal distance (cm) to the tank from its apparent box size."""
-    return _distance_from_apparent(max(det.bbox.width, det.bbox.height),
-                                   frame_w, hfov_deg, tank_size_cm, tilt_deg)
 
 
 # --------------------------------------------------------------------------- #
@@ -499,12 +491,20 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
 # --------------------------------------------------------------------------- #
 # Video pipeline + display
 # --------------------------------------------------------------------------- #
-def start_stream(drone, key, detector, frames, lock, log):
-    from pyhulax.video import AsyncDetector
+def start_stream(drone, key, detector, frames, lock, state, log):
+    from pyhulax.video import AsyncDetector, DrawDetections
 
     drone.set_video_stream(True)
     stream = drone.create_video_stream()
     adet = AsyncDetector(detector)
+    draw = DrawDetections()  # draws the detector's original YOLO boxes
+
+    def _draw_unless_centering(frame):
+        # Same box rendering as the other demos, but suppressed during the
+        # centering phase so only the crosshair shows.
+        if not str(state.get("phase", "")).startswith("center"):
+            return draw(frame)
+        return frame
 
     def _capture(frame):
         try:
@@ -514,26 +514,12 @@ def start_stream(drone, key, detector, frames, lock, log):
             pass
         return frame
 
-    stream.add_callback(adet)       # off-thread detection (attaches detections)
-    stream.add_callback(_capture)   # stash the frame; boxes are drawn at display
+    stream.add_callback(adet)                  # off-thread detection
+    stream.add_callback(_draw_unless_centering)  # original YOLO boxes (not while centering)
+    stream.add_callback(_capture)              # stash annotated frame for display
     stream.start()
     log(f"[{key}] detection stream started")
     return stream, adet
-
-
-def _draw_yolo_box(cv2, img, det, sx, sy, dist=None):
-    """Draw the detector's original bounding box + label, scaled from the
-    detection's pixel space (sx, sy) onto the display image."""
-    x1, y1, x2, y2 = det.bbox.to_xyxy()
-    x1, x2 = int(round(x1 * sx)), int(round(x2 * sx))
-    y1, y2 = int(round(y1 * sy)), int(round(y2 * sy))
-    color = getattr(det, "color", (0, 255, 0))
-    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-    label = f"{det.label} {det.confidence:.2f}"
-    if dist is not None:
-        label += f"  ~{dist:.0f}cm"
-    cv2.putText(img, label, (x1, max(12, y1 - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
 def display_loop(key, frames, adet, lock, state, opts, stop_event):
@@ -555,31 +541,23 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
         with lock:
             fr = frames.get(key)
         if fr is not None:
-            # Draw on a copy so the detector never sees our overlays.
-            img = fr.image.copy()
+            # The YOLO box is already drawn on the frame by the DrawDetections
+            # callback (except during centering). Here we only add overlays.
+            img = fr.image
             h, w = img.shape[:2]
             phase = state.get("phase", "")
             centering = phase.startswith("center")
 
-            # During centering show ONLY the crosshair (no box); otherwise draw
-            # the detector's original YOLO bounding box(es). Detections may have
-            # been computed on a frame of a different size than this one (the
-            # stream can change resolution after start), so scale their pixel
-            # space to the display image - otherwise the box looks scaled/offset.
+            # Distance label next to the tank (no box; the box is already drawn).
             if not centering:
-                dets = list(adet.latest_detections)
-                src = adet.latest_detection_frame_size
-                sx = w / src[0] if src and src[0] else 1.0
-                sy = h / src[1] if src and src[1] else 1.0
-                tank = _pick_target(dets, target)
-                for d in dets:
-                    dist = None
-                    if d is tank:
-                        apparent = max(d.bbox.width * sx, d.bbox.height * sy)
-                        dist = _distance_from_apparent(
-                            apparent, w, opts["hfov"], opts["tank_size_cm"],
-                            opts["tilt_deg"])
-                    _draw_yolo_box(cv2, img, d, sx, sy, dist)
+                tank = _pick_target(fr.detections or [], target)
+                if tank is not None:
+                    cx, cy = tank.bbox.center
+                    dist = estimate_horizontal_distance_cm(
+                        tank, w, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
+                    if dist is not None:
+                        cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
             cv2.putText(img, f"phase: {phase or '-'}",
@@ -621,7 +599,7 @@ def run(opts):
     key = f"D{opts['id']}"
 
     try:
-        stream, adet = start_stream(drone, key, detector, frames, lock, log)
+        stream, adet = start_stream(drone, key, detector, frames, lock, state, log)
     except Exception as exc:  # noqa: BLE001
         drone.disconnect()
         raise SystemExit(f"could not start detection stream: {exc}")

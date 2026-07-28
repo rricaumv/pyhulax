@@ -439,7 +439,6 @@ class AsyncDetector:
         self._latest_frame: Optional[Frame] = None
         self._latest_detections: List[Detection] = []
         self._detection_frame_number: int = -1
-        self._detection_frame_size: Optional[Tuple[int, int]] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -471,19 +470,6 @@ class AsyncDetector:
         """
         with self._lock:
             return self._detection_frame_number
-
-    @property
-    def latest_detection_frame_size(self) -> "Optional[Tuple[int, int]]":
-        """``(width, height)`` of the frame the current detections were computed on.
-
-        ``None`` until the first detection completes. Detection boxes are in this
-        pixel space; if you draw them on a frame of a *different* size (e.g. the
-        video stream changed resolution after start, so an earlier detection is
-        being drawn on a later frame), scale by ``display_size / this`` so the box
-        lines up instead of appearing scaled/offset.
-        """
-        with self._lock:
-            return self._detection_frame_size
 
     def latest(self) -> "tuple[List[Detection], int]":
         """Return ``(detections, frame_number)`` atomically (thread-safe copy)."""
@@ -552,11 +538,9 @@ class AsyncDetector:
             last_number = frame.frame_number
             try:
                 result = self._detector.detect(frame.image)
-                h, w = frame.image.shape[:2]
                 with self._lock:
                     self._latest_detections = result
                     self._detection_frame_number = frame.frame_number
-                    self._detection_frame_size = (w, h)
             except Exception:  # noqa: BLE001 - keep the worker alive on errors
                 time.sleep(0.1)
 
