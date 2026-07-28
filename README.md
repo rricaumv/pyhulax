@@ -209,7 +209,7 @@ constant height — keeping the tank centred in yaw — until it is ~30 cm away
 (`--approach-distance`). Horizontal distance is estimated monocularly from the
 box's apparent size, the model's real size (`--scale 1/72|1/35` or
 `--tank-size-cm`) and the camera field of view (`--hfov`). It then descends
-20 cm (`--descend-cm`), flashes the LED for 5 s (rainbow by default —
+50 cm (`--descend-cm`), flashes the LED for 5 s (rainbow by default —
 `--led-mode`/`--led-rgb`/`--flash-seconds`), and finally retraces every recorded
 move in reverse to return home and land. Uses the bundled tank model by default.
 
