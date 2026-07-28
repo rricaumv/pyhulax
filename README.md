@@ -201,6 +201,30 @@ and `cycle` cycles red→green→blue. `--led-rgb` takes three 0-255 values (def
 `255 0 0` = red) and is ignored for `rainbow`/`cycle`, which use the drone's own
 palette.
 
+`examples/mini_tank_approach_demo.py` hunts a **scale-model tank** (1/72 or
+1/35) on the ground: it takes off and climbs to 100 cm, tilts the camera down
+(`set_camera_angle`, `--tilt-deg`, default 45°), yaws clockwise in 15° steps
+until a tank is detected, centres it in the frame, then flies straight in at
+constant height — keeping the tank centred in yaw — until it is ~30 cm away
+(`--approach-distance`). Horizontal distance is estimated monocularly from the
+box's apparent size, the model's real size (`--scale 1/72|1/35` or
+`--tank-size-cm`) and the camera field of view (`--hfov`). It then descends
+20 cm (`--descend-cm`), flashes the LED for 5 s (rainbow by default —
+`--led-mode`/`--led-rgb`/`--flash-seconds`), and finally retraces every recorded
+move in reverse to return home and land. Uses the bundled tank model by default.
+
+```bash
+# 1/35 tank, camera down 45°, stop 30 cm away, rainbow flash, retrace home
+python examples/mini_tank_approach_demo.py --ip 192.168.1.58 --id 1 --scale 1/35
+
+# 1/72 tank, steeper tilt, tighter stand-off, narrower camera FOV
+python examples/mini_tank_approach_demo.py --ip 192.168.1.58 --scale 1/72 \
+    --tilt-deg 55 --approach-distance 25 --hfov 66
+
+# Print the plan + self-test the distance/retrace math, no hardware
+python examples/mini_tank_approach_demo.py --check
+```
+
 Configured defaults:
 
 ```python
