@@ -238,17 +238,23 @@ pip install "pyhulax[gui]"            # PySide6
 python examples/control_station/__main__.py
 ```
 
-This is a **shell**: every demo currently runs on a hardware-free simulation
-(`StubRunner`) so the whole interface can be reviewed without a drone. It is
-built to extend — adding a demo (now or later) is just registering a `DemoSpec`
-in `examples/control_station/registry.py`:
+The **Mini-tank approach (live)** demo flies the real drone through the control
+station: it drives `examples/mini_tank_approach_demo.py`'s mission and streams
+live video, detections, telemetry, mission phase, and logs into the panels
+(needs `pip install "pyhulax[video]" ultralytics` and a connected drone). The
+other demos currently run on a hardware-free simulation (`StubRunner`) so the
+interface can be reviewed without a drone.
+
+It is built to extend — adding a demo (or wiring an existing one for flight) is
+just editing `examples/control_station/registry.py`:
 
 - `ArgSpec`s declare the optional arguments; the UI auto-builds the form and
   hands the values back to the runner as an `opts` dict.
-- `runner_factory` returns a `Runner`; wiring a demo for real flight means
-  returning a real `Runner` (drives `DroneAPI` + the demo mission, pushing frames
-  / detections / telemetry / phase / logs through the same hooks the simulation
-  uses) instead of `StubRunner`. The UI itself does not change.
+- `runner_factory` returns a `Runner`. Point it at a real `Runner` (see
+  `MiniTankRunner` in `runner_real.py`) to fly: it sets up `DroneAPI` + video +
+  detector and drives the demo's `run_mission`, pushing frames / detections /
+  telemetry / phase / logs through the same hooks the simulation uses. The UI
+  itself does not change. `StubRunner` keeps a demo in simulation.
 
 Configured defaults:
 
