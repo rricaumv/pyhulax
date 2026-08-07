@@ -53,12 +53,17 @@ vision = [
 web = [
     "flask",
 ]
+gui = [
+    "PySide6",
+    "numpy>=2.0",
+]
 all = [
     "asyncpg>=0.29.0",
     "opencv-python",
     "av==15.1.0",
     "onnxruntime",
     "flask",
+    "PySide6",
 ]
 
 [build-system]
