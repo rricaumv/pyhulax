@@ -225,6 +225,31 @@ python examples/mini_tank_approach_demo.py --ip 192.168.1.58 --scale 1/72 \
 python examples/mini_tank_approach_demo.py --check
 ```
 
+## Control Station (GUI)
+
+`examples/control_station/` is a PySide6 desktop app to pick a demo, fill in its
+optional arguments, and watch it run — live video with YOLO detections, drone
+telemetry (battery, ToF height, attitude, velocity, position), flight info
+(connection, mission phase, elapsed, target seen), an info panel (model,
+resolution, FPS, inference time) and a log console.
+
+```bash
+pip install "pyhulax[gui]"            # PySide6
+python examples/control_station/__main__.py
+```
+
+This is a **shell**: every demo currently runs on a hardware-free simulation
+(`StubRunner`) so the whole interface can be reviewed without a drone. It is
+built to extend — adding a demo (now or later) is just registering a `DemoSpec`
+in `examples/control_station/registry.py`:
+
+- `ArgSpec`s declare the optional arguments; the UI auto-builds the form and
+  hands the values back to the runner as an `opts` dict.
+- `runner_factory` returns a `Runner`; wiring a demo for real flight means
+  returning a real `Runner` (drives `DroneAPI` + the demo mission, pushing frames
+  / detections / telemetry / phase / logs through the same hooks the simulation
+  uses) instead of `StubRunner`. The UI itself does not change.
+
 Configured defaults:
 
 ```python
