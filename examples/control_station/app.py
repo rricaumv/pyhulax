@@ -158,6 +158,46 @@ class ArgForm(QWidget):
                 opts[key] = w.text()
         return opts
 
+    def set_value(self, key: str, value: Any) -> None:
+        """Override one field's value after build (e.g. per-drone id/ip)."""
+        if key not in self._widgets:
+            return
+        w, kind = self._widgets[key]
+        if kind == "int":
+            w.setValue(int(value))
+        elif kind == "float":
+            w.setValue(float(value))
+        elif kind == "bool":
+            w.setChecked(bool(value))
+        elif kind == "choice":
+            w.setCurrentText(str(value))
+        elif isinstance(value, (list, tuple)):
+            w.setText(" ".join(str(x) for x in value))
+        else:
+            w.setText(str(value))
+
+
+# Shared read-out definitions (used by the single- and dual-drone UIs).
+TELEMETRY_FIELDS = [
+    ("battery", "Battery %"), ("height_cm", "ToF height (cm)"),
+    ("roll", "Roll"), ("pitch", "Pitch"), ("yaw", "Yaw"),
+    ("vx", "Vel X"), ("vy", "Vel Y"), ("vz", "Vel Z"),
+    ("pos_x", "Pos X"), ("pos_y", "Pos Y"), ("pos_z", "Pos Z"),
+]
+TELEMETRY_FMT = {
+    "battery": "{}%", "height_cm": "{} cm", "roll": "{}°", "pitch": "{}°",
+    "yaw": "{}°", "vx": "{} cm/s", "vy": "{} cm/s", "vz": "{} cm/s",
+    "pos_x": "{} cm", "pos_y": "{} cm", "pos_z": "{} cm",
+}
+FLIGHT_FIELDS = [
+    ("connection", "Connection"), ("phase", "Phase"),
+    ("elapsed", "Elapsed (s)"), ("detected", "Target seen"),
+]
+INFO_FIELDS = [
+    ("model", "Model"), ("resolution", "Resolution"), ("fps", "FPS"),
+    ("inference_ms", "Inference (ms)"), ("frame", "Frame #"),
+]
+
 
 # --------------------------------------------------------------------------- #
 # Small labelled read-out panel (telemetry / flight / info).
@@ -270,25 +310,10 @@ class ControlStation(QWidget):
         self._video = VideoView()
 
         # --- Right: telemetry / flight / info ---
-        self._telemetry = ReadoutPanel("Telemetry", [
-            ("battery", "Battery %"), ("height_cm", "ToF height (cm)"),
-            ("roll", "Roll"), ("pitch", "Pitch"), ("yaw", "Yaw"),
-            ("vx", "Vel X"), ("vy", "Vel Y"), ("vz", "Vel Z"),
-            ("pos_x", "Pos X"), ("pos_y", "Pos Y"), ("pos_z", "Pos Z"),
-        ])
-        self._tfmt = {
-            "battery": "{}%", "height_cm": "{} cm", "roll": "{}°",
-            "pitch": "{}°", "yaw": "{}°", "vx": "{} cm/s", "vy": "{} cm/s",
-            "vz": "{} cm/s", "pos_x": "{} cm", "pos_y": "{} cm", "pos_z": "{} cm",
-        }
-        self._flight = ReadoutPanel("Flight", [
-            ("connection", "Connection"), ("phase", "Phase"),
-            ("elapsed", "Elapsed (s)"), ("detected", "Target seen"),
-        ])
-        self._info = ReadoutPanel("Info", [
-            ("model", "Model"), ("resolution", "Resolution"),
-            ("fps", "FPS"), ("inference_ms", "Inference (ms)"), ("frame", "Frame #"),
-        ])
+        self._telemetry = ReadoutPanel("Telemetry", TELEMETRY_FIELDS)
+        self._tfmt = TELEMETRY_FMT
+        self._flight = ReadoutPanel("Flight", FLIGHT_FIELDS)
+        self._info = ReadoutPanel("Info", INFO_FIELDS)
         right = QVBoxLayout()
         right.addWidget(self._flight)
         right.addWidget(self._telemetry)

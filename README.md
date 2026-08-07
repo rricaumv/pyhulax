@@ -266,6 +266,20 @@ just editing `examples/control_station/registry.py`:
   telemetry / phase / logs through the same hooks the simulation uses. The UI
   itself does not change. `StubRunner` keeps a demo in simulation.
 
+### Two drones
+
+There's a separate two-drone version that commands two drones concurrently —
+two independent panels (each with its own demo, arguments, video, and read-outs,
+seeded with distinct ids/IPs), a **Start both / Stop both** bar, and a shared
+log. Each panel runs its own drone on its own thread, matching the SDK's
+per-drone identity model. It reuses the same demo registry, so any registered
+demo is available in both UIs.
+
+```bash
+python examples/control_station/__main__.py --dual
+# or:  python examples/control_station/app_dual.py
+```
+
 Configured defaults:
 
 ```python
