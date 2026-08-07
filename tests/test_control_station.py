@@ -81,6 +81,19 @@ def test_stub_runner_emits_frames_and_telemetry():
     assert any("SIMULATION" in m for m in hooks.logs)
 
 
+def test_mini_tank_factory_builds_a_real_runner():
+    from runner import Runner  # noqa: E402
+    spec = registry.DEMOS["mini_tank_approach"]
+    runner_obj = spec.runner_factory()   # imports runner_real (no pyhulax yet)
+    assert isinstance(runner_obj, Runner)
+
+
+def test_opts_to_argv_maps_keys_to_flags():
+    import runner_real  # noqa: E402
+    argv = runner_real._opts_to_argv({"ip": "1.2.3.4", "tilt_deg": 50, "led_mode": "rainbow"})
+    assert argv == ["--ip", "1.2.3.4", "--tilt-deg", "50", "--led-mode", "rainbow"]
+
+
 def test_stub_runner_emits_detections_in_detect_phase():
     hooks = _CollectingHooks(max_frames=4)
     StubRunner(["search"], width=320, height=240).run({"id": 1}, hooks)

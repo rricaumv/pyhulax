@@ -63,6 +63,13 @@ def register(spec: DemoSpec) -> DemoSpec:
     return spec
 
 
+def _mini_tank_runner() -> Runner:
+    """Lazily build the real flying runner (imports pyhulax + the demo only when
+    the user actually starts it, so the shell/tests stay dependency-light)."""
+    import runner_real  # type: ignore
+    return runner_real.MiniTankRunner()
+
+
 def defaults(spec: DemoSpec) -> "dict[str, Any]":
     """The opts dict of an unmodified form (every arg at its default)."""
     return {a.key: a.default for a in spec.args}
@@ -100,12 +107,12 @@ _MINI_TANK_PHASES = ["takeoff", "tilt", "search", "center", "approach",
 
 register(DemoSpec(
     key="mini_tank_approach",
-    name="Mini-tank approach",
+    name="Mini-tank approach (live)",
     description=("Find a 1/72 or 1/35 model tank with a downward-tilted camera, "
                  "center it, approach to a stand-off distance, signal, and retrace "
-                 "home."),
+                 "home. Flies the real drone (needs pyhulax[video] + ultralytics)."),
     phases=_MINI_TANK_PHASES,
-    runner_factory=lambda: StubRunner(_MINI_TANK_PHASES),
+    runner_factory=_mini_tank_runner,
     args=_connection_args() + [
         ArgSpec("target", "--target", "str", "tank", "Target class label",
                 group="Detection"),

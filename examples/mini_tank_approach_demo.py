@@ -690,7 +690,7 @@ def _resolve_tank_size(args):
     return SCALE_SIZES_CM[args.scale]
 
 
-def main(argv=None):
+def _build_parser():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ip", metavar="IP", help="Drone IP")
@@ -779,6 +779,16 @@ def main(argv=None):
                    help="Window size in px (default 640 480)")
     p.add_argument("--check", action="store_true",
                    help="Print the plan + self-test distance/retrace math; no hardware")
+    return p
+
+
+def build_opts(argv=None):
+    """Parse argv into the full opts dict (all defaults + any overrides).
+
+    Reused by the control-station runner so the GUI form only needs to supply a
+    subset of arguments; everything else keeps its CLI default.
+    """
+    p = _build_parser()
     args = p.parse_args(argv)
 
     opts = {
@@ -819,14 +829,16 @@ def main(argv=None):
         "connect_timeout": args.connect_timeout,
         "cell": args.cell,
     }
+    return opts, args, p
 
+
+def main(argv=None):
+    opts, args, p = build_opts(argv)
     if args.check:
         check(opts)
         return
-
     if args.ip is None:
         p.error("--ip is required unless using --check")
-
     run(opts)
 
 
