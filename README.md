@@ -233,10 +233,20 @@ telemetry (battery, ToF height, attitude, velocity, position), flight info
 (connection, mission phase, elapsed, target seen), an info panel (model,
 resolution, FPS, inference time) and a log console.
 
+The control station and the `examples/` are **not part of the published PyPI
+package** (the wheel ships only the `pyhulax/` package), and the demos load the
+in-repo `pyhulax`. So run them from a clone of this repo and install the extras
+from the checkout — `pip install "pyhulax[gui]"` from PyPI will not pick up the
+`gui` extra:
+
 ```bash
-pip install "pyhulax[gui]"            # PySide6
+# from the repo root
+pip install -e ".[gui]"                 # PySide6 + numpy
+pip install -e ".[video]" ultralytics   # for the live runner: OpenCV, PyAV, YOLO
 python examples/control_station/__main__.py
 ```
+
+(Or install the deps directly: `pip install PySide6 numpy opencv-python av ultralytics`.)
 
 The **Mini-tank approach (live)** demo flies the real drone through the control
 station: it drives `examples/mini_tank_approach_demo.py`'s mission and streams
@@ -255,6 +265,20 @@ just editing `examples/control_station/registry.py`:
   detector and drives the demo's `run_mission`, pushing frames / detections /
   telemetry / phase / logs through the same hooks the simulation uses. The UI
   itself does not change. `StubRunner` keeps a demo in simulation.
+
+### Two drones
+
+There's a separate two-drone version that commands two drones concurrently —
+two independent panels (each with its own demo, arguments, video, and read-outs,
+seeded with distinct ids/IPs), a **Start both / Stop both** bar, and a shared
+log. Each panel runs its own drone on its own thread, matching the SDK's
+per-drone identity model. It reuses the same demo registry, so any registered
+demo is available in both UIs.
+
+```bash
+python examples/control_station/__main__.py --dual
+# or:  python examples/control_station/app_dual.py
+```
 
 Configured defaults:
 
