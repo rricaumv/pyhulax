@@ -198,17 +198,38 @@ def _focal_px(frame_w: float, hfov_deg: float) -> float:
     return frame_w / (2.0 * math.tan(math.radians(hfov_deg) / 2.0))
 
 
-def estimate_horizontal_distance_cm(det, frame_w, hfov_deg, tank_size_cm, tilt_deg):
-    """Rough horizontal distance (cm) to the tank from its apparent box size.
+def _depression_angle_rad(det, frame_h, focal_px, tilt_deg):
+    """Line-of-sight depression below horizontal to the detection.
+
+    The camera axis points `tilt` below level (that's the image centre). A target
+    below the image centre is seen at a steeper depression, above it a shallower
+    one, by the angle its vertical offset subtends. This is what actually matters
+    for forward/back moves - the fixed camera tilt only holds when the target is
+    dead-centre vertically.
+    """
+    dy = det.bbox.center[1] - frame_h / 2.0     # >0 => below centre => steeper
+    return math.radians(tilt_deg) + math.atan2(dy, focal_px)
+
+
+def estimate_horizontal_distance_cm(det, frame_w, frame_h, hfov_deg, tank_size_cm,
+                                    tilt_deg):
+    """Rough horizontal ground distance (cm) to the tank from its apparent size.
 
     slant = real_size * focal_px / apparent_px  (pinhole, size-from-range)
-    horizontal = slant * cos(tilt)              (camera tilted `tilt` below level)
+    horizontal = slant * cos(depression)        (depression = camera tilt + the
+                                                 target's vertical offset angle)
+
+    Using the target's actual depression - not just the camera tilt - keeps the
+    forward/back distance right as the tank drifts off the image centre while the
+    drone approaches at constant height.
     """
     apparent = max(det.bbox.width, det.bbox.height)
     if apparent <= 0:
         return None
-    slant = tank_size_cm * _focal_px(frame_w, hfov_deg) / apparent
-    return slant * math.cos(math.radians(tilt_deg))
+    focal_px = _focal_px(frame_w, hfov_deg)
+    slant = tank_size_cm * focal_px / apparent
+    depression = _depression_angle_rad(det, frame_h, focal_px, tilt_deg)
+    return slant * math.cos(depression)
 
 
 # --------------------------------------------------------------------------- #
@@ -328,7 +349,8 @@ def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg
     """Fly straight in at constant height until ~stop_distance cm away.
 
     Each iteration: re-observe the tank, keep it centred in yaw (small turns),
-    estimate the horizontal distance from its apparent size, and step forward by
+    estimate the horizontal distance from its apparent size (compensating for the
+    camera tilt + the tank's vertical position in the frame), and step forward by
     at most the remaining gap. Height is never changed here.
     """
     w, h = frame_size
@@ -343,7 +365,7 @@ def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg
             return False
         cx = det.bbox.center[0]
         ex = cx - w / 2.0
-        dist = estimate_horizontal_distance_cm(det, w, hfov, tank_size_cm, tilt_deg)
+        dist = estimate_horizontal_distance_cm(det, w, h, hfov, tank_size_cm, tilt_deg)
         log(f"  approach: est {('%.0f cm' % dist) if dist else '?'}  x-err={ex:+.0f}px")
 
         # Keep the tank centred in yaw before driving forward ("approach directly").
@@ -360,7 +382,7 @@ def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg
     det = _observe(adet, target, settle, fresh_timeout, current_frame_number, stop)
     if det is None:
         return False
-    dist = estimate_horizontal_distance_cm(det, w, hfov, tank_size_cm, tilt_deg)
+    dist = estimate_horizontal_distance_cm(det, w, h, hfov, tank_size_cm, tilt_deg)
     return dist is not None and dist <= stop_distance + tol
 
 
@@ -554,7 +576,7 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
                 if tank is not None:
                     cx, cy = tank.bbox.center
                     dist = estimate_horizontal_distance_cm(
-                        tank, w, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
+                        tank, w, h, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
                     if dist is not None:
                         cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -652,20 +674,28 @@ def check(opts):
           f"{_led})  [{opts['led_mode']}]")
     print(f"  8. level camera, retrace recorded moves in reverse, single_fly_touchdown")
 
-    # Self-test the distance estimate: closer (bigger box) => smaller distance.
-    w = opts["cell"][0]
+    # Self-test the distance estimate.
+    w, h = opts["cell"][0], opts["cell"][1]
 
     class _Box:
-        def __init__(self, s): self.width = self.height = s
+        def __init__(self, s, cy): self.width = self.height = s; self.center = (w / 2, cy)
     class _Det:
-        def __init__(self, s): self.bbox = _Box(s)
+        def __init__(self, s, cy=None): self.bbox = _Box(s, h / 2 if cy is None else cy)
 
-    d_far = estimate_horizontal_distance_cm(_Det(50), w, opts["hfov"],
-                                            opts["tank_size_cm"], opts["tilt_deg"])
-    d_near = estimate_horizontal_distance_cm(_Det(200), w, opts["hfov"],
-                                             opts["tank_size_cm"], opts["tilt_deg"])
+    def _dist(det):
+        return estimate_horizontal_distance_cm(det, w, h, opts["hfov"],
+                                               opts["tank_size_cm"], opts["tilt_deg"])
+
+    # Closer (bigger box) => smaller distance.
+    d_far, d_near = _dist(_Det(50)), _dist(_Det(200))
     print(f"  distance check: box 50px -> {d_far:.0f} cm, 200px -> {d_near:.0f} cm")
     assert d_near < d_far, "closer (bigger box) must estimate nearer"
+
+    # Tilt compensation: same box lower in the frame is at a steeper depression,
+    # so its horizontal distance is smaller than if it were dead-centre.
+    d_centre, d_low = _dist(_Det(80)), _dist(_Det(80, cy=h * 0.85))
+    print(f"  tilt compensation: centred {d_centre:.0f} cm vs low-in-frame {d_low:.0f} cm")
+    assert d_low < d_centre, "a lower target must project to a nearer horizontal distance"
 
     # Self-test the retrace inverse (inverse move, reverse order).
     ml = MotionLog(_FakeServer(), log=lambda *_: None)
