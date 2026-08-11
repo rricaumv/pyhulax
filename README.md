@@ -204,7 +204,9 @@ palette.
 `examples/mini_tank_approach_demo.py` hunts a **scale-model tank** (1/72 or
 1/35) on the ground: it takes off and climbs to 100 cm, tilts the camera down
 (`set_camera_angle`, `--tilt-deg`, default 45°), yaws clockwise in 15° steps
-until a tank is detected, centres it in the frame, then flies straight in at
+until a tank is detected, centres it in the frame by rotating — yaw for the
+horizontal error, camera pitch for the vertical — rather than strafing (so a
+small target is never translated out of view), then flies straight in at
 constant height — keeping the tank centred in yaw — until it is ~30 cm away
 (`--approach-distance`). Horizontal distance is estimated monocularly from the
 box's apparent size, the model's real size (`--scale 1/72|1/35` or

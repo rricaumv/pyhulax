@@ -10,8 +10,9 @@ home. The mission:
                  DOWN_ABSOLUTE) - default 45 deg (--tilt-deg)
   3. search      yaw clockwise (single_fly_turnright) in 15 deg steps until a
                  tank is detected in view
-  4. center      strafe/adjust until the tank's box centre sits on the frame
-                 centre (adaptive gain, robust to dropouts)
+  4. center      rotate the tank's box onto the frame centre - yaw for
+                 horizontal, camera pitch for vertical (no strafing, so the
+                 target never gets translated out of view)
   5. approach    fly straight in at constant height, keeping the tank centred in
                  yaw, until it's ~30 cm away horizontally (--approach-distance).
                  Distance is estimated monocularly from the box's apparent size,
@@ -266,21 +267,33 @@ def search_for_tank(motion, adet, target, step_deg, settle, fresh_timeout,
     return False
 
 
-def center_on_target(motion, adet, target, frame_size, max_step, min_step,
-                     climb_step, deadband_frac, settle, fresh_timeout,
-                     current_frame_number, max_steps, retries, log, stop):
-    """Strafe/adjust until the tank's box centre hits the frame centre.
+def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
+                     deadband_frac, yaw_step_max, yaw_step_min, tilt_step_max,
+                     settle, fresh_timeout, current_frame_number, max_steps,
+                     retries, log, stop):
+    """Center the tank on the frame centre by ROTATING, not translating.
 
-    One axis per iteration (dominant error first); each strafe is sized from a
-    pixels-per-cm gain learned on the fly (so it converges without overshooting
-    the tank out of frame); vertical moves are capped lower than lateral ones;
-    retries ride through transient dropouts; a lost tank is recovered by backing
-    off the last strafe. Every move is recorded for the retrace-home step.
+    Strafing to centre *translates* the drone, which easily pushes a small,
+    close, downward-tilted target out of view (the previous plan lost the tank
+    often). Instead centre by pure rotation about the drone, so the target keeps
+    the same range and just swings toward the middle - it does not leave the
+    frame:
+
+      * horizontal error -> yaw the drone (single_fly_turnleft/right)
+      * vertical error   -> pitch the camera (set_camera_angle DOWN_ABSOLUTE)
+
+    Each step is sized directly from the angle the pixel error subtends (via the
+    focal length), so it needs no cm-per-pixel guessing and lands near centre in
+    one move; steps are clamped for safety and iterated to absorb execution/
+    detection noise. Yaw moves are recorded for retrace-home; the camera pitch is
+    reset when the mission levels the camera. opts['tilt_deg'] is updated to the
+    final tilt so the approach's distance estimate stays correct.
     """
     w, h = frame_size
     cxf, cyf = w / 2.0, h / 2.0
     dbx, dby = w * deadband_frac, h * deadband_frac
-    gain = {"x": None, "y": None}
+    focal = _focal_px(w, hfov)
+    tilt = float(opts.get("tilt_deg", 45.0))
 
     def observe():
         return _observe(adet, target, settle, fresh_timeout,
@@ -293,52 +306,41 @@ def center_on_target(motion, adet, target, frame_size, max_step, min_step,
 
     for _ in range(max_steps):
         if stop.is_set():
+            opts["tilt_deg"] = tilt
             return False
         cx, cy = det.bbox.center
         ex, ey = cx - cxf, cy - cyf
-        log(f"  center err = ({ex:+.0f}, {ey:+.0f}) px  gain={gain}")
+        log(f"  center err = ({ex:+.0f}, {ey:+.0f}) px  tilt={tilt:.0f}")
         if abs(ex) <= dbx and abs(ey) <= dby:
             log("  centered")
+            opts["tilt_deg"] = tilt
             return True
 
-        axis = "x" if (abs(ex) / (w / 2.0)) >= (abs(ey) / (h / 2.0)) else "y"
-        err = ex if axis == "x" else ey
-        axis_max = climb_step if axis == "y" else max_step
-        lo = min(min_step, axis_max)
-        g = gain[axis]
-        step = (abs(err) / g) if (g and g > 1e-6) else 0.5 * axis_max
-        step = max(lo, min(axis_max, step))
-
-        if axis == "x":
-            forward, undo = (motion.right, motion.left) if err > 0 else (motion.left, motion.right)
+        if abs(ex) / (w / 2.0) >= abs(ey) / (h / 2.0):
+            # Horizontal: yaw toward the target by the angle it subtends.
+            ang = math.degrees(math.atan2(abs(ex), focal))
+            step = max(yaw_step_min, min(yaw_step_max, ang))
+            (motion.turn_right if ex > 0 else motion.turn_left)(step)
         else:
-            forward, undo = (motion.down, motion.up) if err > 0 else (motion.up, motion.down)
-        forward(step)
-        moved_cm = round(step)
+            # Vertical: pitch the camera toward the target (below centre => look
+            # down more; above => look up). Keeps the drone stationary.
+            ang = math.degrees(math.atan2(abs(ey), focal))
+            step = max(1.0, min(tilt_step_max, ang))
+            tilt = max(0.0, min(90.0, tilt + (step if ey > 0 else -step)))
+            try:
+                drone.set_camera_angle(CameraPitchMode.DOWN_ABSOLUTE, int(round(tilt)))
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(settle)  # let the gimbal settle before re-observing
 
-        new = observe()
-        if new is None:
-            log("  tank lost after strafe - backing off to recover")
-            undo(step)
-            gain[axis] = None
-            new = observe()
-            if new is None:
-                log("  lost tank while centering")
-                return False
-            det = new
-            continue
-
-        ncx, ncy = new.bbox.center
-        nerr = (ncx - cxf) if axis == "x" else (ncy - cyf)
-        delta = abs(err) - abs(nerr)
-        if moved_cm > 0 and delta > 2:
-            observed = delta / moved_cm
-            gain[axis] = observed if gain[axis] is None else 0.5 * gain[axis] + 0.5 * observed
-        elif delta < -2:
-            gain[axis] = None
-        det = new
+        det = observe()
+        if det is None:
+            log("  lost tank while centering")
+            opts["tilt_deg"] = tilt
+            return False
 
     log("  centering hit max steps")
+    opts["tilt_deg"] = tilt
     return abs(det.bbox.center[0] - cxf) <= dbx and abs(det.bbox.center[1] - cyf) <= dby
 
 
@@ -447,11 +449,11 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
             state["phase"] = "center"
             log("[4] center the tank in view")
             centered = center_on_target(
-                motion, adet, opts["target"], frame_size(), opts["center_step"],
-                opts["center_min_step"], opts["center_climb_step"],
-                opts["center_deadband"], opts["settle"], opts["fresh_timeout"],
-                current_frame_number, opts["center_max_steps"],
-                opts["center_retries"], log, stop_event)
+                drone, motion, adet, opts["target"], frame_size(), opts["hfov"],
+                opts, opts["center_deadband"], opts["center_yaw_step"],
+                opts["center_yaw_min"], opts["center_tilt_step"], opts["settle"],
+                opts["fresh_timeout"], current_frame_number,
+                opts["center_max_steps"], opts["center_retries"], log, stop_event)
             if stop_event.is_set():
                 raise _Aborted()
 
@@ -519,14 +521,6 @@ def start_stream(drone, key, detector, frames, lock, state, log):
     drone.set_video_stream(True)
     stream = drone.create_video_stream()
     adet = AsyncDetector(detector)
-    draw = DrawDetections()  # draws the detector's original YOLO boxes
-
-    def _draw_unless_centering(frame):
-        # Same box rendering as the other demos, but suppressed during the
-        # centering phase so only the crosshair shows.
-        if not str(state.get("phase", "")).startswith("center"):
-            return draw(frame)
-        return frame
 
     def _capture(frame):
         try:
@@ -536,9 +530,9 @@ def start_stream(drone, key, detector, frames, lock, state, log):
             pass
         return frame
 
-    stream.add_callback(adet)                  # off-thread detection
-    stream.add_callback(_draw_unless_centering)  # original YOLO boxes (not while centering)
-    stream.add_callback(_capture)              # stash annotated frame for display
+    stream.add_callback(adet)               # off-thread detection
+    stream.add_callback(DrawDetections())   # keep the YOLO box on in every phase
+    stream.add_callback(_capture)           # stash annotated frame for display
     stream.start()
     log(f"[{key}] detection stream started")
     return stream, adet
@@ -564,22 +558,20 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
             fr = frames.get(key)
         if fr is not None:
             # The YOLO box is already drawn on the frame by the DrawDetections
-            # callback (except during centering). Here we only add overlays.
+            # callback (kept on in every phase). Here we only add overlays.
             img = fr.image
             h, w = img.shape[:2]
             phase = state.get("phase", "")
-            centering = phase.startswith("center")
 
-            # Distance label next to the tank (no box; the box is already drawn).
-            if not centering:
-                tank = _pick_target(fr.detections or [], target)
-                if tank is not None:
-                    cx, cy = tank.bbox.center
-                    dist = estimate_horizontal_distance_cm(
-                        tank, w, h, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
-                    if dist is not None:
-                        cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            # Distance label next to the tank (the box itself is already drawn).
+            tank = _pick_target(fr.detections or [], target)
+            if tank is not None:
+                cx, cy = tank.bbox.center
+                dist = estimate_horizontal_distance_cm(
+                    tank, w, h, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
+                if dist is not None:
+                    cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
             cv2.putText(img, f"phase: {phase or '-'}",
@@ -666,7 +658,7 @@ def check(opts):
     print(f"  1. single_fly_takeoff -> climb to {opts['height']} cm (video on)")
     print(f"  2. set_camera_angle(DOWN_ABSOLUTE, {opts['tilt_deg']:.0f})")
     print(f"  3. search: single_fly_turnright({opts['search_step']}) CW until 'tank'")
-    print(f"  4. center the tank's box on the frame centre")
+    print(f"  4. center the tank: yaw (horizontal) + camera pitch (vertical)")
     print(f"  5. approach to ~{opts['approach_distance']:.0f} cm (constant height)")
     print(f"  6. single_fly_down({opts['descend_cm']})")
     _led = LED_FLASH_MODES[opts["led_mode"]]
@@ -755,13 +747,13 @@ def _build_parser():
     p.add_argument("--search-step", type=int, default=15,
                    help="Clockwise yaw step per search turn, degrees (default 15)")
 
-    # Centering (step 4)
-    p.add_argument("--center-step", type=int, default=20,
-                   help="Max lateral strafe per centering move, cm (default 20)")
-    p.add_argument("--center-climb-step", type=int, default=10,
-                   help="Max vertical move per centering step, cm (default 10)")
-    p.add_argument("--center-min-step", type=int, default=6,
-                   help="Min strafe per centering move, cm (default 6)")
+    # Centering (step 4) - by rotation (yaw + camera pitch), never by strafing.
+    p.add_argument("--center-yaw-step", type=float, default=20.0,
+                   help="Max yaw per horizontal centering step, degrees (default 20)")
+    p.add_argument("--center-yaw-min", type=float, default=2.0,
+                   help="Min yaw per horizontal centering step, degrees (default 2)")
+    p.add_argument("--center-tilt-step", type=float, default=12.0,
+                   help="Max camera-pitch per vertical centering step, deg (default 12)")
     p.add_argument("--center-deadband", type=float, default=0.08,
                    help="Centered when box centre within this fraction of the frame")
     p.add_argument("--center-max-steps", type=int, default=25,
@@ -837,9 +829,9 @@ def build_opts(argv=None):
         "climb_tol": args.climb_tol,
         "climb_step": args.climb_step,
         "search_step": args.search_step,
-        "center_step": args.center_step,
-        "center_climb_step": args.center_climb_step,
-        "center_min_step": args.center_min_step,
+        "center_yaw_step": args.center_yaw_step,
+        "center_yaw_min": args.center_yaw_min,
+        "center_tilt_step": args.center_tilt_step,
         "center_deadband": args.center_deadband,
         "center_max_steps": args.center_max_steps,
         "center_retries": args.center_retries,
