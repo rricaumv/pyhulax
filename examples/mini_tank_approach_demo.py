@@ -11,8 +11,9 @@ home. The mission:
   3. search      yaw clockwise (single_fly_turnright) in 15 deg steps until a
                  tank is detected in view
   4. center      rotate the tank's box onto the frame centre - yaw for
-                 horizontal, camera pitch for vertical (no strafing, so the
-                 target never gets translated out of view)
+                 horizontal, camera pitch for vertical - then a small strafe for
+                 the final near-centre nudge (avoids yaw over-correction), so the
+                 target is never translated far and never leaves view
   5. approach    fly straight in at constant height, keeping the tank centred in
                  yaw, until it's ~30 cm away horizontally (--approach-distance).
                  Distance is estimated monocularly from the box's apparent size,
@@ -269,6 +270,7 @@ def search_for_tank(motion, adet, target, step_deg, settle, fresh_timeout,
 
 def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
                      deadband_frac, yaw_step_max, yaw_step_min, tilt_step_max,
+                     fine_band_frac, fine_step_cm,
                      settle, fresh_timeout, current_frame_number, max_steps,
                      retries, log, stop):
     """Center the tank on the frame centre by ROTATING, not translating.
@@ -282,16 +284,21 @@ def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
       * horizontal error -> yaw the drone (single_fly_turnleft/right)
       * vertical error   -> pitch the camera (set_camera_angle DOWN_ABSOLUTE)
 
-    Each step is sized directly from the angle the pixel error subtends (via the
-    focal length), so it needs no cm-per-pixel guessing and lands near centre in
-    one move; steps are clamped for safety and iterated to absorb execution/
-    detection noise. Yaw moves are recorded for retrace-home; the camera pitch is
-    reset when the mission levels the camera. opts['tilt_deg'] is updated to the
-    final tilt so the approach's distance estimate stays correct.
+    Yaw is sized directly from the angle the pixel error subtends (via the focal
+    length), which lands near centre in one move for a large error. But a yaw has
+    a minimum step and some rotational momentum, so near the centre it tends to
+    over-correct and oscillate. Once the horizontal error is small (inside
+    ``fine_band_frac`` of the half-frame, but still outside the deadband), switch
+    to a small lateral *strafe* (``fine_step_cm``): a few cm can't eject a target
+    that is already near centre, and it has no yaw momentum, so it nudges cleanly
+    onto centre. Yaw + strafe moves are recorded for retrace-home; the camera
+    pitch is reset when the mission levels the camera. opts['tilt_deg'] is updated
+    so the approach's distance estimate stays correct.
     """
     w, h = frame_size
     cxf, cyf = w / 2.0, h / 2.0
     dbx, dby = w * deadband_frac, h * deadband_frac
+    fine_px = fine_band_frac * (w / 2.0)   # near-centre -> fine strafe, not yaw
     focal = _focal_px(w, hfov)
     tilt = float(opts.get("tilt_deg", 45.0))
 
@@ -317,10 +324,14 @@ def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
             return True
 
         if abs(ex) / (w / 2.0) >= abs(ey) / (h / 2.0):
-            # Horizontal: yaw toward the target by the angle it subtends.
-            ang = math.degrees(math.atan2(abs(ex), focal))
-            step = max(yaw_step_min, min(yaw_step_max, ang))
-            (motion.turn_right if ex > 0 else motion.turn_left)(step)
+            # Horizontal. Far from centre: yaw by the angle it subtends. Near
+            # centre: a small strafe (no yaw momentum -> no over-correction).
+            if abs(ex) > fine_px:
+                ang = math.degrees(math.atan2(abs(ex), focal))
+                step = max(yaw_step_min, min(yaw_step_max, ang))
+                (motion.turn_right if ex > 0 else motion.turn_left)(step)
+            else:
+                (motion.right if ex > 0 else motion.left)(fine_step_cm)
         else:
             # Vertical: pitch the camera toward the target (below centre => look
             # down more; above => look up). Keeps the drone stationary.
@@ -451,7 +462,8 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
             centered = center_on_target(
                 drone, motion, adet, opts["target"], frame_size(), opts["hfov"],
                 opts, opts["center_deadband"], opts["center_yaw_step"],
-                opts["center_yaw_min"], opts["center_tilt_step"], opts["settle"],
+                opts["center_yaw_min"], opts["center_tilt_step"],
+                opts["center_fine_band"], opts["center_fine_step"], opts["settle"],
                 opts["fresh_timeout"], current_frame_number,
                 opts["center_max_steps"], opts["center_retries"], log, stop_event)
             if stop_event.is_set():
@@ -754,6 +766,13 @@ def _build_parser():
                    help="Min yaw per horizontal centering step, degrees (default 2)")
     p.add_argument("--center-tilt-step", type=float, default=12.0,
                    help="Max camera-pitch per vertical centering step, deg (default 12)")
+    p.add_argument("--center-fine-band", type=float, default=0.35,
+                   help="Below this fraction of the half-frame the horizontal error "
+                        "is nudged by a small strafe instead of yaw, to avoid yaw "
+                        "over-correction near centre (default 0.35)")
+    p.add_argument("--center-fine-step", type=float, default=5.0,
+                   help="Lateral strafe per fine (near-centre) centering step, cm "
+                        "(default 5)")
     p.add_argument("--center-deadband", type=float, default=0.08,
                    help="Centered when box centre within this fraction of the frame")
     p.add_argument("--center-max-steps", type=int, default=25,
@@ -832,6 +851,8 @@ def build_opts(argv=None):
         "center_yaw_step": args.center_yaw_step,
         "center_yaw_min": args.center_yaw_min,
         "center_tilt_step": args.center_tilt_step,
+        "center_fine_band": args.center_fine_band,
+        "center_fine_step": args.center_fine_step,
         "center_deadband": args.center_deadband,
         "center_max_steps": args.center_max_steps,
         "center_retries": args.center_retries,
