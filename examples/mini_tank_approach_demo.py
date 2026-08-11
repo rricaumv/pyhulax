@@ -521,14 +521,6 @@ def start_stream(drone, key, detector, frames, lock, state, log):
     drone.set_video_stream(True)
     stream = drone.create_video_stream()
     adet = AsyncDetector(detector)
-    draw = DrawDetections()  # draws the detector's original YOLO boxes
-
-    def _draw_unless_centering(frame):
-        # Same box rendering as the other demos, but suppressed during the
-        # centering phase so only the crosshair shows.
-        if not str(state.get("phase", "")).startswith("center"):
-            return draw(frame)
-        return frame
 
     def _capture(frame):
         try:
@@ -538,9 +530,9 @@ def start_stream(drone, key, detector, frames, lock, state, log):
             pass
         return frame
 
-    stream.add_callback(adet)                  # off-thread detection
-    stream.add_callback(_draw_unless_centering)  # original YOLO boxes (not while centering)
-    stream.add_callback(_capture)              # stash annotated frame for display
+    stream.add_callback(adet)               # off-thread detection
+    stream.add_callback(DrawDetections())   # keep the YOLO box on in every phase
+    stream.add_callback(_capture)           # stash annotated frame for display
     stream.start()
     log(f"[{key}] detection stream started")
     return stream, adet
@@ -566,22 +558,20 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
             fr = frames.get(key)
         if fr is not None:
             # The YOLO box is already drawn on the frame by the DrawDetections
-            # callback (except during centering). Here we only add overlays.
+            # callback (kept on in every phase). Here we only add overlays.
             img = fr.image
             h, w = img.shape[:2]
             phase = state.get("phase", "")
-            centering = phase.startswith("center")
 
-            # Distance label next to the tank (no box; the box is already drawn).
-            if not centering:
-                tank = _pick_target(fr.detections or [], target)
-                if tank is not None:
-                    cx, cy = tank.bbox.center
-                    dist = estimate_horizontal_distance_cm(
-                        tank, w, h, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
-                    if dist is not None:
-                        cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            # Distance label next to the tank (the box itself is already drawn).
+            tank = _pick_target(fr.detections or [], target)
+            if tank is not None:
+                cx, cy = tank.bbox.center
+                dist = estimate_horizontal_distance_cm(
+                    tank, w, h, opts["hfov"], opts["tank_size_cm"], opts["tilt_deg"])
+                if dist is not None:
+                    cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
             cv2.putText(img, f"phase: {phase or '-'}",

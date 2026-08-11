@@ -109,14 +109,11 @@ class MiniTankRunner(Runner):
             return frame
 
         def _emit(frame):
-            # Push frame + detections to the UI. Suppress boxes during centering
-            # (crosshair only), matching the demo; the UI draws the crosshair.
-            phase = str(state.get("phase", ""))
-            dets = None
-            if not phase.startswith("center"):
-                dets = [{"x": d.bbox.x, "y": d.bbox.y, "w": d.bbox.width,
-                         "h": d.bbox.height, "label": d.label, "conf": d.confidence}
-                        for d in (frame.detections or [])]
+            # Push frame + detections to the UI (box kept on in every phase); the
+            # UI draws the box from these dicts plus the crosshair.
+            dets = [{"x": d.bbox.x, "y": d.bbox.y, "w": d.bbox.width,
+                     "h": d.bbox.height, "label": d.label, "conf": d.confidence}
+                    for d in (frame.detections or [])]
             hooks.emit_frame(frame.image, dets)
             return frame
 
