@@ -80,7 +80,7 @@ def defaults(spec: DemoSpec) -> "dict[str, Any]":
 # --------------------------------------------------------------------------- #
 def _connection_args() -> List[ArgSpec]:
     return [
-        ArgSpec("ip", "--ip", "str", "192.168.1.58", "Drone IP address",
+        ArgSpec("ip", "--ip", "str", "192.168.1.49", "Drone IP address",
                 group="Connection"),
         ArgSpec("id", "--id", "int", 1, "Drone id", group="Connection",
                 minimum=0, maximum=15),

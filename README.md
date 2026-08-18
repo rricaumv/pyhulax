@@ -213,9 +213,12 @@ box's apparent size, the model's real size (`--scale 1/72|1/35` or
 `--tank-size-cm`) and the camera field of view (`--hfov`), compensated for the
 camera tilt and the tank's vertical position in the frame so the forward/back
 moves stay accurate as the tank drifts off centre. It then descends
-50 cm (`--descend-cm`), flashes the LED for 5 s (rainbow by default —
-`--led-mode`/`--led-rgb`/`--flash-seconds`), and finally retraces every recorded
-move in reverse to return home and land. Uses the bundled tank model by default.
+50 cm (`--descend-cm`), then engages: it flashes the LED for 5 s (rainbow by
+default — `--led-mode`/`--led-rgb`/`--flash-seconds`) **and fires the laser at
+the target** for the same duration (`--laser`/`--no-laser`, `--laser-mode`
+burst|continuous|single, `--laser-frequency`, `--laser-ammo`), and finally
+retraces every recorded move in reverse to return home and land. Uses the
+bundled tank model by default.
 
 ```bash
 # 1/35 tank, camera down 45°, stop 30 cm away, rainbow flash, retrace home
