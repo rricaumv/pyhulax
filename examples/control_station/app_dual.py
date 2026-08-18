@@ -167,8 +167,8 @@ class DualControlStation(QWidget):
         self.setWindowTitle("pyhulax control station - two drones")
         self.resize(1300, 900)
 
-        self._panel_a = DronePanel("Drone A", id_default=1, ip_default="192.168.1.58")
-        self._panel_b = DronePanel("Drone B", id_default=2, ip_default="192.168.1.59")
+        self._panel_a = DronePanel("Drone A", id_default=1, ip_default="192.168.1.49")
+        self._panel_b = DronePanel("Drone B", id_default=2, ip_default="192.168.1.50")
         self._panels = [self._panel_a, self._panel_b]
 
         start_both = QPushButton("Start both")
