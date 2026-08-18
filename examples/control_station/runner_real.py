@@ -39,9 +39,14 @@ def _opts_to_argv(gui_opts: Dict[str, Any]) -> list:
     """Turn the GUI's opts subset into CLI argv for the demo's build_opts().
 
     Keys map to flags by ``--{key-with-dashes}``, matching the demo's argparse.
+    The one special case: the laser has a store_true/false toggle rather than a
+    value flag, so a ``laser_mode`` of "off" maps to ``--no-laser``.
     """
     argv = []
     for key, value in gui_opts.items():
+        if key == "laser_mode" and str(value) == "off":
+            argv.append("--no-laser")
+            continue
         argv += [f"--{key.replace('_', '-')}", str(value)]
     return argv
 
