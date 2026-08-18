@@ -20,8 +20,9 @@ home. The mission:
                  the model's real size (--scale / --tank-size-cm) and the camera
                  field of view (--hfov)
   6. descend     drop by 50 cm (--descend-cm)
-  7. LED         flash the LED for 5 s - rainbow by default (--led-mode /
-                 --led-rgb / --flash-seconds)
+  7. engage      flash the LED (rainbow by default) AND fire the laser at the
+                 target for the same duration (--laser / --no-laser,
+                 --laser-mode, --laser-frequency, --laser-ammo, --flash-seconds)
   8. return home retrace every recorded motion in reverse (inverse move, reverse
                  order), then land (single_fly_touchdown)
 
@@ -72,7 +73,7 @@ import time  # noqa: E402
 import traceback  # noqa: E402
 
 from pyhulax import DroneAPI  # noqa: E402
-from pyhulax.core import CameraPitchMode, LEDMode  # noqa: E402
+from pyhulax.core import CameraPitchMode, LaserMode, LEDMode  # noqa: E402
 from pyhulax.core.exceptions import DroneConnectionError  # noqa: E402
 
 
@@ -82,6 +83,13 @@ LED_FLASH_MODES = {
     "rainbow": int(LEDMode.SEVEN_COLOR),  # 16 - multi-colour rainbow cycle
     "flash": int(LEDMode.BLINK),          # 32 - blink the single --led-rgb colour
     "cycle": int(LEDMode.RGB_CYCLE),      # 4  - cycle red -> green -> blue
+}
+
+# Laser firing mode for the "engage target" step (fired during the LED flash).
+LASER_MODES = {
+    "burst": LaserMode.BURST,             # repeated shots at --laser-frequency
+    "continuous": LaserMode.CONTINUOUS,   # steady beam, no ammo
+    "single": LaserMode.SINGLE_SHOT,      # one shot
 }
 
 # Real-world size (cm) of a generic MBT's longest dimension at each scale
@@ -399,15 +407,42 @@ def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg
     return dist is not None and dist <= stop_distance + tol
 
 
-def flash_led(server, r, g, b, seconds, mode, log):
-    """single_fly_lamplight for `seconds` using the chosen effect."""
-    mode_val = LED_FLASH_MODES.get(mode, LED_FLASH_MODES["rainbow"])
-    if mode == "flash":
+def fire_and_flash(drone, server, opts, log):
+    """Engage the target: flash the LED and fire the laser at it, together.
+
+    The drone is centred on and stood off from the tank by now, so the laser
+    (forward-firing) is aimed at it. The LED flash and the laser run for the same
+    ``flash_seconds``, then the laser is switched off.
+    """
+    r, g, b = opts["led_rgb"]
+    seconds = opts["flash_seconds"]
+    led_mode = opts["led_mode"]
+    mode_val = LED_FLASH_MODES.get(led_mode, LED_FLASH_MODES["rainbow"])
+    if led_mode == "flash":
         log(f"  LED flash ({r},{g},{b}) mode={mode_val} for {seconds}s")
     else:
-        log(f"  LED {mode} effect mode={mode_val} for {seconds}s (colour ignored)")
+        log(f"  LED {led_mode} effect mode={mode_val} for {seconds}s (colour ignored)")
     server.single_fly_lamplight(r, g, b, int(seconds), mode_val)
+
+    fired = False
+    if opts.get("laser", True):
+        lmode = LASER_MODES.get(opts["laser_mode"], LaserMode.BURST)
+        log(f"  FIRE laser ({opts['laser_mode']}) at the target for {seconds}s")
+        try:
+            drone.fire_laser(lmode, frequency=opts["laser_frequency"],
+                             ammo=opts["laser_ammo"])
+            fired = True
+        except Exception as exc:  # noqa: BLE001
+            log(f"  laser unavailable: {exc}")
+
     time.sleep(seconds)
+
+    if fired:
+        try:
+            drone.fire_laser(LaserMode.OFF)
+        except Exception:  # noqa: BLE001
+            pass
+        log("  laser off")
 
 
 # --------------------------------------------------------------------------- #
@@ -488,10 +523,9 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
                 log(f"[6] descend {opts['descend_cm']} cm")
                 motion.down(opts["descend_cm"])
 
-                state["phase"] = "led"
-                log("[7] LED signal")
-                flash_led(server, *opts["led_rgb"], opts["flash_seconds"],
-                          opts["led_mode"], log)
+                state["phase"] = "engage"
+                log("[7] engage: LED signal + fire laser at target")
+                fire_and_flash(drone, server, opts, log)
             else:
                 log("  did not reach stand-off distance")
         else:
@@ -674,8 +708,10 @@ def check(opts):
     print(f"  5. approach to ~{opts['approach_distance']:.0f} cm (constant height)")
     print(f"  6. single_fly_down({opts['descend_cm']})")
     _led = LED_FLASH_MODES[opts["led_mode"]]
+    _laser = (f"+ fire_laser({opts['laser_mode']}, freq={opts['laser_frequency']}, "
+              f"ammo={opts['laser_ammo']})") if opts["laser"] else "(laser off)"
     print(f"  7. single_fly_lamplight(*{opts['led_rgb']}, {opts['flash_seconds']}, "
-          f"{_led})  [{opts['led_mode']}]")
+          f"{_led})  [{opts['led_mode']}]  {_laser}")
     print(f"  8. level camera, retrace recorded moves in reverse, single_fly_touchdown")
 
     # Self-test the distance estimate.
@@ -809,6 +845,18 @@ def _build_parser():
     p.add_argument("--flash-seconds", type=float, default=5.0,
                    help="LED signal duration in seconds (default 5)")
 
+    # Laser (fired at the target during the LED flash, step 7)
+    p.add_argument("--laser", dest="laser", action="store_true", default=True,
+                   help="Fire the laser at the target during the flash (default on)")
+    p.add_argument("--no-laser", dest="laser", action="store_false",
+                   help="Do not fire the laser")
+    p.add_argument("--laser-mode", choices=list(LASER_MODES), default="burst",
+                   help="Laser firing mode: burst (default), continuous, single")
+    p.add_argument("--laser-frequency", type=int, default=10,
+                   help="Burst firing frequency, shots/sec 1-14 (default 10)")
+    p.add_argument("--laser-ammo", type=int, default=100,
+                   help="Burst ammo, 1-255 (default 100)")
+
     # Misc
     p.add_argument("--settle", type=float, default=1.0,
                    help="Seconds to wait after each move for the view to settle")
@@ -867,6 +915,10 @@ def build_opts(argv=None):
         "led_mode": args.led_mode,
         "led_rgb": tuple(args.led_rgb),
         "flash_seconds": args.flash_seconds,
+        "laser": args.laser,
+        "laser_mode": args.laser_mode,
+        "laser_frequency": args.laser_frequency,
+        "laser_ammo": args.laser_ammo,
         "settle": args.settle,
         "fresh_timeout": args.fresh_timeout,
         "connect_timeout": args.connect_timeout,
