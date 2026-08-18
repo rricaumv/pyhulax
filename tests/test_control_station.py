@@ -94,6 +94,12 @@ def test_opts_to_argv_maps_keys_to_flags():
     assert argv == ["--ip", "1.2.3.4", "--tilt-deg", "50", "--led-mode", "rainbow"]
 
 
+def test_opts_to_argv_laser_off_maps_to_no_laser():
+    import runner_real  # noqa: E402
+    assert runner_real._opts_to_argv({"laser_mode": "off"}) == ["--no-laser"]
+    assert runner_real._opts_to_argv({"laser_mode": "burst"}) == ["--laser-mode", "burst"]
+
+
 def test_stub_runner_emits_detections_in_detect_phase():
     hooks = _CollectingHooks(max_frames=4)
     StubRunner(["search"], width=320, height=240).run({"id": 1}, hooks)

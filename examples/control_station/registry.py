@@ -99,6 +99,20 @@ def _led_args() -> List[ArgSpec]:
     ]
 
 
+def _laser_args() -> List[ArgSpec]:
+    # 'off' is mapped to --no-laser by the runner (see runner_real._opts_to_argv).
+    return [
+        ArgSpec("laser_mode", "--laser-mode", "choice", "burst",
+                "Laser fired at the target during the flash ('off' disables it)",
+                choices=["burst", "continuous", "single", "off"], group="Laser"),
+        ArgSpec("laser_frequency", "--laser-frequency", "int", 10,
+                "Burst firing frequency (shots/s)", group="Laser",
+                minimum=1, maximum=14),
+        ArgSpec("laser_ammo", "--laser-ammo", "int", 100,
+                "Burst ammo", group="Laser", minimum=1, maximum=255),
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Built-in demo registrations (StubRunner for now)
 # --------------------------------------------------------------------------- #
@@ -133,7 +147,7 @@ register(DemoSpec(
         ArgSpec("descend_cm", "--descend-cm", "int", 50,
                 "Descent after reaching the tank (cm)", group="Flight",
                 minimum=0, maximum=200),
-    ] + _led_args(),
+    ] + _led_args() + _laser_args(),
 ))
 
 _FLIGHT_PHASES = ["takeoff", "climb", "search", "center", "flash", "return", "landed"]
