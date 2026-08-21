@@ -445,34 +445,39 @@ def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg
 
 
 def fire_and_flash(drone, server, opts, log):
-    """Engage the target: flash the LED and fire the laser at it, together.
+    """Engage the target: fire the laser and flash the LED at the same time.
 
-    The drone is centred on and stood off from the tank by now, so the laser
-    (forward-firing) is aimed at it. The LED flash and the laser run for the same
-    ``flash_seconds``, then the laser is switched off.
+    single_fly_lamplight blocks for its whole duration, so it is run on a thread
+    while the laser fires here - otherwise the laser would only start after the
+    LED finished. The laser is fired first, then the LED flash, so both are on
+    together for ``flash_seconds``; the laser is switched off at the end.
     """
     r, g, b = opts["led_rgb"]
     seconds = opts["flash_seconds"]
     led_mode = opts["led_mode"]
     mode_val = LED_FLASH_MODES.get(led_mode, LED_FLASH_MODES["rainbow"])
-    if led_mode == "flash":
-        log(f"  LED flash ({r},{g},{b}) mode={mode_val} for {seconds}s")
-    else:
-        log(f"  LED {led_mode} effect mode={mode_val} for {seconds}s (colour ignored)")
-    server.single_fly_lamplight(r, g, b, int(seconds), mode_val)
 
+    # Fire the laser first (a non-blocking command) so it's on for the whole flash.
     fired = False
     if opts.get("laser", True):
         lmode = LASER_MODES.get(opts["laser_mode"], LaserMode.BURST)
-        log(f"  FIRE laser ({opts['laser_mode']}) at the target for {seconds}s")
+        log(f"  FIRE laser ({opts['laser_mode']}) + LED {led_mode} together for {seconds}s")
         try:
             drone.fire_laser(lmode, frequency=opts["laser_frequency"],
                              ammo=opts["laser_ammo"])
             fired = True
         except Exception as exc:  # noqa: BLE001
             log(f"  laser unavailable: {exc}")
+    else:
+        log(f"  LED {led_mode} for {seconds}s")
 
+    # Flash the LED concurrently (it blocks for `seconds`, so run it off-thread).
+    led_thread = threading.Thread(
+        target=lambda: server.single_fly_lamplight(r, g, b, int(seconds), mode_val),
+        daemon=True)
+    led_thread.start()
     time.sleep(seconds)
+    led_thread.join(timeout=2.0)
 
     if fired:
         try:
@@ -831,7 +836,7 @@ def _build_parser():
     p.add_argument("--imgsz", type=int, default=640, help="YOLO image size (default 640)")
 
     # Geometry / distance estimate
-    p.add_argument("--scale", choices=list(SCALE_SIZES_CM), default="1/35",
+    p.add_argument("--scale", choices=list(SCALE_SIZES_CM), default="1/72",
                    help="Model tank scale; sets the assumed real size "
                         f"({', '.join(f'{k}->{v}cm' for k, v in SCALE_SIZES_CM.items())})")
     p.add_argument("--tank-size-cm", type=float, default=None,
@@ -872,8 +877,8 @@ def _build_parser():
                    help="Re-observations through a transient dropout (default 3)")
 
     # Approach (step 5)
-    p.add_argument("--approach-distance", type=float, default=30.0,
-                   help="Horizontal stand-off distance to stop at, cm (default 30)")
+    p.add_argument("--approach-distance", type=float, default=90.0,
+                   help="Horizontal stand-off distance to stop at, cm (default 90)")
     p.add_argument("--approach-tol", type=float, default=8.0,
                    help="Stand-off distance tolerance, cm (default 8)")
     p.add_argument("--forward-step", type=int, default=20,

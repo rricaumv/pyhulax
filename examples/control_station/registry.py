@@ -99,24 +99,22 @@ def _led_args() -> List[ArgSpec]:
     ]
 
 
+def _led_mode_arg() -> ArgSpec:
+    return ArgSpec("led_mode", "--led-mode", "choice", "rainbow",
+                   "LED effect", choices=["rainbow", "flash", "cycle"], group="LED")
+
+
 def _laser_args() -> List[ArgSpec]:
-    # 'off' is mapped to --no-laser by the runner (see runner_real._opts_to_argv).
+    # Only the laser mode and the on-time are exposed in the UI; the rest
+    # (frequency, ammo, aim, offset) keep their CLI defaults. 'off' is mapped to
+    # --no-laser by the runner (see runner_real._opts_to_argv).
     return [
         ArgSpec("laser_mode", "--laser-mode", "choice", "burst",
-                "Laser fired at the target during the flash ('off' disables it)",
+                "Laser fired at the target ('off' disables it)",
                 choices=["burst", "continuous", "single", "off"], group="Laser"),
-        ArgSpec("laser_frequency", "--laser-frequency", "int", 10,
-                "Burst firing frequency (shots/s)", group="Laser",
-                minimum=1, maximum=14),
-        ArgSpec("laser_ammo", "--laser-ammo", "int", 100,
-                "Burst ammo", group="Laser", minimum=1, maximum=255),
-        ArgSpec("aim", "--aim", "choice", "laser",
-                "Step-4 aim: 'laser' puts the laser boresight on the tank without "
-                "centring it; 'center' centres the tank in the frame",
-                choices=["laser", "center"], group="Laser"),
-        ArgSpec("laser_offset_mm", "--laser-offset-mm", "float", 9.0,
-                "Laser offset below the lens (mm)", group="Laser",
-                minimum=0, maximum=100),
+        ArgSpec("flash_seconds", "--flash-seconds", "float", 5.0,
+                "On time (s) - LED flash + laser", group="Laser",
+                minimum=0, maximum=60),
     ]
 
 
@@ -139,7 +137,7 @@ register(DemoSpec(
                 group="Detection"),
         ArgSpec("model", "--model", "str", "examples/models/tank21jul.pt",
                 "YOLO model path", group="Detection"),
-        ArgSpec("scale", "--scale", "choice", "1/35", "Model tank scale",
+        ArgSpec("scale", "--scale", "choice", "1/72", "Model tank scale",
                 choices=["1/72", "1/35"], group="Geometry"),
         ArgSpec("hfov", "--hfov", "float", 70.0, "Camera horizontal FOV (deg)",
                 group="Geometry", minimum=20, maximum=160),
@@ -149,12 +147,13 @@ register(DemoSpec(
                 group="Flight", minimum=30, maximum=300),
         ArgSpec("search_step", "--search-step", "int", 15,
                 "Clockwise yaw step (deg)", group="Flight", minimum=1, maximum=90),
-        ArgSpec("approach_distance", "--approach-distance", "float", 30.0,
+        ArgSpec("approach_distance", "--approach-distance", "float", 90.0,
                 "Stand-off distance (cm)", group="Flight", minimum=5, maximum=300),
         ArgSpec("descend_cm", "--descend-cm", "int", 50,
                 "Descent after reaching the tank (cm)", group="Flight",
                 minimum=0, maximum=200),
-    ] + _led_args() + _laser_args(),
+        _led_mode_arg(),
+    ] + _laser_args(),
 ))
 
 _FLIGHT_PHASES = ["takeoff", "climb", "search", "center", "flash", "return", "landed"]
