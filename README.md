@@ -204,10 +204,15 @@ palette.
 `examples/mini_tank_approach_demo.py` hunts a **scale-model tank** (1/72 or
 1/35) on the ground: it takes off and climbs to 100 cm, tilts the camera down
 (`set_camera_angle`, `--tilt-deg`, default 45°), yaws clockwise in 15° steps
-until a tank is detected, centres it in the frame by rotating — yaw for the
-horizontal error, camera pitch for the vertical — rather than strafing (so a
-small target is never translated out of view), then flies straight in at
-constant height — keeping the tank centred in yaw — until it is ~30 cm away
+until a tank is detected, then aims by rotating — yaw for the horizontal error,
+camera pitch for the vertical (a small strafe for the final nudge), rather than
+strafing (so a small target is never translated out of view). `--aim laser`
+(default) tilts to put the **laser boresight** on the tank — the laser sits
+`--laser-offset-mm` (9 mm) below the lens on the same tilt axis, so its beam
+strikes just below the frame centre — *without centring the tank*; `--aim
+center` centres the tank instead. A second red crosshair marks where the laser
+strikes. It then flies straight in at constant height — keeping the tank centred
+in yaw — until it is ~30 cm away
 (`--approach-distance`). Horizontal distance is estimated monocularly from the
 box's apparent size, the model's real size (`--scale 1/72|1/35` or
 `--tank-size-cm`) and the camera field of view (`--hfov`), compensated for the

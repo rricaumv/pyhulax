@@ -110,6 +110,13 @@ def _laser_args() -> List[ArgSpec]:
                 minimum=1, maximum=14),
         ArgSpec("laser_ammo", "--laser-ammo", "int", 100,
                 "Burst ammo", group="Laser", minimum=1, maximum=255),
+        ArgSpec("aim", "--aim", "choice", "laser",
+                "Step-4 aim: 'laser' puts the laser boresight on the tank without "
+                "centring it; 'center' centres the tank in the frame",
+                choices=["laser", "center"], group="Laser"),
+        ArgSpec("laser_offset_mm", "--laser-offset-mm", "float", 9.0,
+                "Laser offset below the lens (mm)", group="Laser",
+                minimum=0, maximum=100),
     ]
 
 

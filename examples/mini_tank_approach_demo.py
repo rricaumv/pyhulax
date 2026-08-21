@@ -10,10 +10,11 @@ home. The mission:
                  DOWN_ABSOLUTE) - default 45 deg (--tilt-deg)
   3. search      yaw clockwise (single_fly_turnright) in 15 deg steps until a
                  tank is detected in view
-  4. center      rotate the tank's box onto the frame centre - yaw for
-                 horizontal, camera pitch for vertical - then a small strafe for
-                 the final near-centre nudge (avoids yaw over-correction), so the
-                 target is never translated far and never leaves view
+  4. aim         rotate the tank onto the aim point - yaw for horizontal, camera
+                 pitch for vertical, a small strafe for the final nudge. --aim
+                 laser (default) tilts to put the *laser boresight* on the tank
+                 (the laser sits --laser-offset-mm below the lens) WITHOUT
+                 centring the tank; --aim center centres it in the frame
   5. approach    fly straight in at constant height, keeping the tank centred in
                  yaw, until it's ~30 cm away horizontally (--approach-distance).
                  Distance is estimated monocularly from the box's apparent size,
@@ -276,37 +277,67 @@ def search_for_tank(motion, adet, target, step_deg, settle, fresh_timeout,
     return False
 
 
-def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
-                     deadband_frac, yaw_step_max, yaw_step_min, tilt_step_max,
-                     fine_band_frac, fine_step_cm,
-                     settle, fresh_timeout, current_frame_number, max_steps,
-                     retries, log, stop):
-    """Center the tank on the frame centre by ROTATING, not translating.
+def laser_boresight_offset_px(det, frame_w, hfov_deg, tank_size_cm, laser_offset_mm):
+    """Pixels *below* the frame centre where the laser appears to strike.
 
-    Strafing to centre *translates* the drone, which easily pushes a small,
-    close, downward-tilted target out of view (the previous plan lost the tank
-    often). Instead centre by pure rotation about the drone, so the target keeps
-    the same range and just swings toward the middle - it does not leave the
-    frame:
+    The laser sits ``laser_offset_mm`` below the lens on the same tilt axis, so
+    its beam is parallel to the optical axis but offset down. A point that far
+    off the axis at range D projects to ``focal * offset / D`` pixels off centre
+    (parallax), and because the laser is below the lens the spot lands below the
+    centre. D is the target's range, estimated from its apparent size.
+    """
+    apparent = max(det.bbox.width, det.bbox.height)
+    if apparent <= 0:
+        return 0.0
+    focal = _focal_px(frame_w, hfov_deg)
+    slant_mm = (tank_size_cm * focal / apparent) * 10.0   # size-from-range, cm->mm
+    if slant_mm <= 0:
+        return 0.0
+    return focal * laser_offset_mm / slant_mm
+
+
+def laser_crosshair_dy(opts, tank, frame_w):
+    """Vertical pixel offset (below centre) of the laser crosshair.
+
+    Uses the tank's estimated range when it's detected, otherwise the stand-off
+    distance as a resting guide.
+    """
+    if tank is not None:
+        return laser_boresight_offset_px(tank, frame_w, opts["hfov"],
+                                         opts["tank_size_cm"], opts["laser_offset_mm"])
+    focal = _focal_px(frame_w, opts["hfov"])
+    d_mm = max(1.0, float(opts["approach_distance"]) * 10.0)
+    return focal * opts["laser_offset_mm"] / d_mm
+
+
+def aim_at_target(drone, motion, adet, target, frame_size, hfov, opts, aim_mode,
+                  laser_offset_mm, tank_size_cm, deadband_frac, yaw_step_max,
+                  yaw_step_min, tilt_step_max, fine_band_frac, fine_step_cm,
+                  settle, fresh_timeout, current_frame_number, max_steps,
+                  retries, log, stop):
+    """Bring the tank onto an aim point by ROTATING, not translating.
+
+    The aim point is the frame centre (``aim_mode='center'``) or the *laser
+    boresight* (``aim_mode='laser'``) - a point below centre where the
+    lens-mounted laser actually strikes. Aiming at the laser boresight puts the
+    beam on the tank *without centring the tank* in the frame.
+
+    Rotating (not strafing) keeps the target at the same range so it does not
+    leave view:
 
       * horizontal error -> yaw the drone (single_fly_turnleft/right)
       * vertical error   -> pitch the camera (set_camera_angle DOWN_ABSOLUTE)
 
-    Yaw is sized directly from the angle the pixel error subtends (via the focal
-    length), which lands near centre in one move for a large error. But a yaw has
-    a minimum step and some rotational momentum, so near the centre it tends to
-    over-correct and oscillate. Once the horizontal error is small (inside
-    ``fine_band_frac`` of the half-frame, but still outside the deadband), switch
-    to a small lateral *strafe* (``fine_step_cm``): a few cm can't eject a target
-    that is already near centre, and it has no yaw momentum, so it nudges cleanly
-    onto centre. Yaw + strafe moves are recorded for retrace-home; the camera
-    pitch is reset when the mission levels the camera. opts['tilt_deg'] is updated
-    so the approach's distance estimate stays correct.
+    Yaw is sized from the angle the error subtends; near centre it switches to a
+    small strafe (``fine_step_cm``) to avoid yaw-momentum over-correction. Yaw +
+    strafe moves are recorded for retrace-home; the camera pitch is reset when the
+    mission levels the camera. opts['tilt_deg'] is updated so the approach's
+    distance estimate stays correct.
     """
     w, h = frame_size
     cxf, cyf = w / 2.0, h / 2.0
     dbx, dby = w * deadband_frac, h * deadband_frac
-    fine_px = fine_band_frac * (w / 2.0)   # near-centre -> fine strafe, not yaw
+    fine_px = fine_band_frac * (w / 2.0)   # near-target -> fine strafe, not yaw
     focal = _focal_px(w, hfov)
     tilt = float(opts.get("tilt_deg", 45.0))
 
@@ -314,9 +345,16 @@ def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
         return _observe(adet, target, settle, fresh_timeout,
                         current_frame_number, stop, retries=retries)
 
+    def aim_y(det):
+        # Vertical set-point: frame centre, or below it at the laser boresight.
+        if aim_mode == "laser":
+            return cyf + laser_boresight_offset_px(det, w, hfov, tank_size_cm,
+                                                   laser_offset_mm)
+        return cyf
+
     det = observe()
     if det is None:
-        log("  lost tank while centering (not visible at start)")
+        log("  lost tank while aiming (not visible at start)")
         return False
 
     for _ in range(max_steps):
@@ -324,16 +362,15 @@ def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
             opts["tilt_deg"] = tilt
             return False
         cx, cy = det.bbox.center
-        ex, ey = cx - cxf, cy - cyf
-        log(f"  center err = ({ex:+.0f}, {ey:+.0f}) px  tilt={tilt:.0f}")
+        ex, ey = cx - cxf, cy - aim_y(det)   # aim at centre or laser boresight
+        log(f"  aim[{aim_mode}] err = ({ex:+.0f}, {ey:+.0f}) px  tilt={tilt:.0f}")
         if abs(ex) <= dbx and abs(ey) <= dby:
-            log("  centered")
+            log(f"  on aim point ({aim_mode})")
             opts["tilt_deg"] = tilt
             return True
 
         if abs(ex) / (w / 2.0) >= abs(ey) / (h / 2.0):
-            # Horizontal. Far from centre: yaw by the angle it subtends. Near
-            # centre: a small strafe (no yaw momentum -> no over-correction).
+            # Horizontal. Far: yaw by the angle it subtends. Near: small strafe.
             if abs(ex) > fine_px:
                 ang = math.degrees(math.atan2(abs(ex), focal))
                 step = max(yaw_step_min, min(yaw_step_max, ang))
@@ -341,8 +378,8 @@ def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
             else:
                 (motion.right if ex > 0 else motion.left)(fine_step_cm)
         else:
-            # Vertical: pitch the camera toward the target (below centre => look
-            # down more; above => look up). Keeps the drone stationary.
+            # Vertical: pitch the camera toward the aim point (below => look down
+            # more; above => look up). Keeps the drone stationary.
             ang = math.degrees(math.atan2(abs(ey), focal))
             step = max(1.0, min(tilt_step_max, ang))
             tilt = max(0.0, min(90.0, tilt + (step if ey > 0 else -step)))
@@ -354,13 +391,13 @@ def center_on_target(drone, motion, adet, target, frame_size, hfov, opts,
 
         det = observe()
         if det is None:
-            log("  lost tank while centering")
+            log("  lost tank while aiming")
             opts["tilt_deg"] = tilt
             return False
 
-    log("  centering hit max steps")
+    log("  aiming hit max steps")
     opts["tilt_deg"] = tilt
-    return abs(det.bbox.center[0] - cxf) <= dbx and abs(det.bbox.center[1] - cyf) <= dby
+    return abs(det.bbox.center[0] - cxf) <= dbx and abs(det.bbox.center[1] - aim_y(det)) <= dby
 
 
 def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg,
@@ -467,6 +504,15 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
             fr = frames.get(key)
         return fr.frame_number if fr is not None else -1
 
+    def _aim(mode):
+        return aim_at_target(
+            drone, motion, adet, opts["target"], frame_size(), opts["hfov"], opts,
+            mode, opts["laser_offset_mm"], opts["tank_size_cm"],
+            opts["center_deadband"], opts["center_yaw_step"], opts["center_yaw_min"],
+            opts["center_tilt_step"], opts["center_fine_band"], opts["center_fine_step"],
+            opts["settle"], opts["fresh_timeout"], current_frame_number,
+            opts["center_max_steps"], opts["center_retries"], log, stop_event)
+
     try:
         state["phase"] = "takeoff"
         log(f"[1] takeoff + climb to {opts['height']} cm (video already on)")
@@ -492,15 +538,9 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
             raise _Aborted()
 
         if found:
-            state["phase"] = "center"
-            log("[4] center the tank in view")
-            centered = center_on_target(
-                drone, motion, adet, opts["target"], frame_size(), opts["hfov"],
-                opts, opts["center_deadband"], opts["center_yaw_step"],
-                opts["center_yaw_min"], opts["center_tilt_step"],
-                opts["center_fine_band"], opts["center_fine_step"], opts["settle"],
-                opts["fresh_timeout"], current_frame_number,
-                opts["center_max_steps"], opts["center_retries"], log, stop_event)
+            state["phase"] = "aim" if opts["aim"] == "laser" else "center"
+            log(f"[4] aim ({opts['aim']}) the tank")
+            centered = _aim(opts["aim"])
             if stop_event.is_set():
                 raise _Aborted()
 
@@ -524,6 +564,13 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
                 motion.down(opts["descend_cm"])
 
                 state["phase"] = "engage"
+                # Final laser aim so the beam is on the tank at fire time (the
+                # descend just shifted the view). Only when firing the laser.
+                if opts["laser"] and opts["aim"] == "laser":
+                    log("[7a] final laser aim")
+                    _aim("laser")
+                    if stop_event.is_set():
+                        raise _Aborted()
                 log("[7] engage: LED signal + fire laser at target")
                 fire_and_flash(drone, server, opts, log)
             else:
@@ -619,7 +666,13 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
                     cv2.putText(img, f"~{dist:.0f} cm", (cx + 8, cy),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
+            # Frame-centre crosshair (yellow) + laser crosshair (red, where the
+            # lens-mounted laser strikes at the target's range).
             cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 24, 2)
+            ly = int(max(0, min(h - 1, h // 2 + laser_crosshair_dy(opts, tank, w))))
+            cv2.drawMarker(img, (w // 2, ly), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 20, 2)
+            cv2.putText(img, "laser", (w // 2 + 12, ly - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             cv2.putText(img, f"phase: {phase or '-'}",
                         (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.putText(img, f"tilt {opts['tilt_deg']:.0f}  det {adet.avg_inference_time:.0f} ms",
@@ -704,7 +757,9 @@ def check(opts):
     print(f"  1. single_fly_takeoff -> climb to {opts['height']} cm (video on)")
     print(f"  2. set_camera_angle(DOWN_ABSOLUTE, {opts['tilt_deg']:.0f})")
     print(f"  3. search: single_fly_turnright({opts['search_step']}) CW until 'tank'")
-    print(f"  4. center the tank: yaw (horizontal) + camera pitch (vertical)")
+    print(f"  4. aim ({opts['aim']}): yaw + camera pitch"
+          + ("  [laser boresight, -%gmm]" % opts["laser_offset_mm"]
+             if opts["aim"] == "laser" else "  [frame centre]"))
     print(f"  5. approach to ~{opts['approach_distance']:.0f} cm (constant height)")
     print(f"  6. single_fly_down({opts['descend_cm']})")
     _led = LED_FLASH_MODES[opts["led_mode"]]
@@ -856,6 +911,12 @@ def _build_parser():
                    help="Burst firing frequency, shots/sec 1-14 (default 10)")
     p.add_argument("--laser-ammo", type=int, default=100,
                    help="Burst ammo, 1-255 (default 100)")
+    p.add_argument("--aim", choices=["laser", "center"], default="laser",
+                   help="Step 4 aim: 'laser' tilts to put the laser boresight on "
+                        "the tank (without centring it), 'center' centres the tank "
+                        "in the frame (default laser)")
+    p.add_argument("--laser-offset-mm", type=float, default=9.0,
+                   help="Laser mounting offset below the lens, mm (default 9)")
 
     # Misc
     p.add_argument("--settle", type=float, default=1.0,
@@ -919,6 +980,8 @@ def build_opts(argv=None):
         "laser_mode": args.laser_mode,
         "laser_frequency": args.laser_frequency,
         "laser_ammo": args.laser_ammo,
+        "aim": args.aim,
+        "laser_offset_mm": args.laser_offset_mm,
         "settle": args.settle,
         "fresh_timeout": args.fresh_timeout,
         "connect_timeout": args.connect_timeout,
