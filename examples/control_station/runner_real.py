@@ -115,11 +115,23 @@ class MiniTankRunner(Runner):
 
         def _emit(frame):
             # Push frame + detections to the UI (box kept on in every phase); the
-            # UI draws the box from these dicts plus the crosshair.
+            # UI draws the box from these dicts plus the frame-centre crosshair.
             dets = [{"x": d.bbox.x, "y": d.bbox.y, "w": d.bbox.width,
                      "h": d.bbox.height, "label": d.label, "conf": d.confidence}
                     for d in (frame.detections or [])]
-            hooks.emit_frame(frame.image, dets)
+            image = frame.image
+            # Burn in the laser crosshair (the UI has no laser-specific overlay).
+            try:
+                import cv2
+                h, w = image.shape[:2]
+                tank = demo._pick_target(frame.detections or [], opts["target"])
+                ly = int(max(0, min(h - 1, h // 2 + demo.laser_crosshair_dy(opts, tank, w))))
+                image = image.copy()
+                cv2.drawMarker(image, (w // 2, ly), (0, 0, 255),
+                               cv2.MARKER_TILTED_CROSS, 20, 2)
+            except Exception:  # noqa: BLE001
+                image = frame.image
+            hooks.emit_frame(image, dets)
             return frame
 
         stream.add_callback(adet)      # off-thread detection
