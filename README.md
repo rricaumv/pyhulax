@@ -221,9 +221,12 @@ moves stay accurate as the tank drifts off centre. It then descends
 50 cm (`--descend-cm`), then engages: it flashes the LED for 5 s (rainbow by
 default — `--led-mode`/`--led-rgb`/`--flash-seconds`) **and fires the laser at
 the target** for the same duration (`--laser`/`--no-laser`, `--laser-mode`
-burst|continuous|single, `--laser-frequency`, `--laser-ammo`), and finally
-retraces every recorded move in reverse to return home and land. Uses the
-bundled tank model by default.
+burst|continuous|single, `--laser-frequency`, `--laser-ammo`), dithering the yaw
+±`--laser-sweep-deg` (3°) to sweep the beam across the target, and finally
+retraces every recorded move in reverse to return home and land — consecutive
+same-axis moves are merged into one, so the many small centering yaws collapse
+into a single turn and the return trip stays short. A "TARGET DETECTED" banner
+shows while a tank is in view. Uses the bundled tank model by default.
 
 ```bash
 # 1/35 tank, camera down 45°, stop 30 cm away, rainbow flash, retrace home

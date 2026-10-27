@@ -114,6 +114,17 @@ class MotionLog:
         "turnright": "turnleft", "turnleft": "turnright",
     }
 
+    # Axis + sign of each command, and the command for each signed net, used to
+    # coalesce consecutive same-axis moves on retrace.
+    _AXIS = {
+        "turnleft": ("yaw", +1), "turnright": ("yaw", -1),
+        "left": ("x", +1), "right": ("x", -1),
+        "forward": ("fwd", +1), "back": ("fwd", -1),
+        "up": ("z", +1), "down": ("z", -1),
+    }
+    _AXIS_POS = {"yaw": "turnleft", "x": "left", "fwd": "forward", "z": "up"}
+    _AXIS_NEG = {"yaw": "turnright", "x": "right", "fwd": "back", "z": "down"}
+
     def __init__(self, server, led: int = 0, log=print):
         self._server = server
         self._led = led
@@ -141,7 +152,33 @@ class MotionLog:
         return list(self._moves)
 
     def plan_retrace(self):
-        return [(self._INVERSE[name], mag) for name, mag in reversed(self._moves)]
+        """Inverse moves in reverse order, with consecutive same-axis moves
+        merged into one net move.
+
+        Centering/approach record many small yaw (and forward) steps; retracing
+        them one-by-one is slow. Merging a run of consecutive moves on one axis
+        (e.g. all the centering yaws) into a single net turn is exact - rotations
+        about the same axis (and translations along one heading) compose
+        additively - and keeps the return trip short. A run is only broken by a
+        move on a different axis, so correctness across heading changes is kept.
+        """
+        raw = [(self._INVERSE[name], mag) for name, mag in reversed(self._moves)]
+        out = []
+        axis = None
+        net = 0.0
+        for name, mag in raw:
+            a, sign = self._AXIS[name]
+            if a == axis:
+                net += sign * mag
+            else:
+                if axis is not None and round(net) != 0:
+                    cmd = self._AXIS_POS[axis] if net > 0 else self._AXIS_NEG[axis]
+                    out.append((cmd, abs(round(net))))
+                axis, net = a, sign * mag
+        if axis is not None and round(net) != 0:
+            cmd = self._AXIS_POS[axis] if net > 0 else self._AXIS_NEG[axis]
+            out.append((cmd, abs(round(net))))
+        return out
 
     def retrace(self, stop=None) -> None:
         for name, magnitude in self.plan_retrace():
@@ -444,24 +481,31 @@ def approach_tank(motion, adet, target, frame_size, hfov, tank_size_cm, tilt_deg
     return dist is not None and dist <= stop_distance + tol
 
 
-def fire_and_flash(drone, server, opts, log):
+def fire_and_flash(drone, server, opts, log, stop):
     """Engage the target: fire the laser and flash the LED at the same time.
 
     single_fly_lamplight blocks for its whole duration, so it is run on a thread
     while the laser fires here - otherwise the laser would only start after the
     LED finished. The laser is fired first, then the LED flash, so both are on
     together for ``flash_seconds``; the laser is switched off at the end.
+
+    While firing, the drone optionally does a slight yaw dither (±
+    ``laser_sweep_deg``) to sweep the beam across the target. The sweep uses the
+    raw yaw commands (not recorded) and returns to the start heading each cycle,
+    so it doesn't affect the retrace-home path.
     """
     r, g, b = opts["led_rgb"]
     seconds = opts["flash_seconds"]
     led_mode = opts["led_mode"]
     mode_val = LED_FLASH_MODES.get(led_mode, LED_FLASH_MODES["rainbow"])
+    sweep = opts.get("laser_sweep_deg", 0) or 0
 
     # Fire the laser first (a non-blocking command) so it's on for the whole flash.
     fired = False
     if opts.get("laser", True):
         lmode = LASER_MODES.get(opts["laser_mode"], LaserMode.BURST)
-        log(f"  FIRE laser ({opts['laser_mode']}) + LED {led_mode} together for {seconds}s")
+        log(f"  FIRE laser ({opts['laser_mode']}) + LED {led_mode} together for {seconds}s"
+            + (f", yaw sweep +/-{sweep:g} deg" if sweep > 0 else ""))
         try:
             drone.fire_laser(lmode, frequency=opts["laser_frequency"],
                              ammo=opts["laser_ammo"])
@@ -476,7 +520,20 @@ def fire_and_flash(drone, server, opts, log):
         target=lambda: server.single_fly_lamplight(r, g, b, int(seconds), mode_val),
         daemon=True)
     led_thread.start()
-    time.sleep(seconds)
+
+    if sweep > 0:
+        # Sweep the beam across the target, returning to centre each cycle
+        # (CW sweep -> CCW sweep -> centre), until the on-time elapses.
+        t0 = time.time()
+        while not stop.is_set() and (time.time() - t0) < seconds:
+            try:
+                server.single_fly_turnright(sweep, 0)       # +sweep CW
+                server.single_fly_turnleft(2 * sweep, 0)    # to sweep CCW
+                server.single_fly_turnright(sweep, 0)       # back to centre
+            except Exception:  # noqa: BLE001
+                break
+    else:
+        time.sleep(seconds)
     led_thread.join(timeout=2.0)
 
     if fired:
@@ -577,7 +634,7 @@ def run_mission(drone, adet, frames, key, lock, state, opts, stop_event, log):
                     if stop_event.is_set():
                         raise _Aborted()
                 log("[7] engage: LED signal + fire laser at target")
-                fire_and_flash(drone, server, opts, log)
+                fire_and_flash(drone, server, opts, log, stop_event)
             else:
                 log("  did not reach stand-off distance")
         else:
@@ -682,6 +739,12 @@ def display_loop(key, frames, adet, lock, state, opts, stop_event):
                         (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             cv2.putText(img, f"tilt {opts['tilt_deg']:.0f}  det {adet.avg_inference_time:.0f} ms",
                         (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            if tank is not None:
+                # Prominent "TARGET DETECTED" banner, top-centre.
+                txt = "TARGET DETECTED"
+                (tw, _), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                cv2.putText(img, txt, ((w - tw) // 2, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             cv2.imshow(win, img)
         if cv2.waitKey(15) & 0xFF == ord("q"):
             stop_event.set()
@@ -916,6 +979,9 @@ def _build_parser():
                    help="Burst firing frequency, shots/sec 1-14 (default 10)")
     p.add_argument("--laser-ammo", type=int, default=100,
                    help="Burst ammo, 1-255 (default 100)")
+    p.add_argument("--laser-sweep-deg", type=float, default=3.0,
+                   help="Slight yaw dither (+/- deg) to sweep the beam across the "
+                        "target while firing; 0 disables (default 3)")
     p.add_argument("--aim", choices=["laser", "center"], default="laser",
                    help="Step 4 aim: 'laser' tilts to put the laser boresight on "
                         "the tank (without centring it), 'center' centres the tank "
@@ -985,6 +1051,7 @@ def build_opts(argv=None):
         "laser_mode": args.laser_mode,
         "laser_frequency": args.laser_frequency,
         "laser_ammo": args.laser_ammo,
+        "laser_sweep_deg": args.laser_sweep_deg,
         "aim": args.aim,
         "laser_offset_mm": args.laser_offset_mm,
         "settle": args.settle,

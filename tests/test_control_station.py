@@ -88,6 +88,25 @@ def test_mini_tank_factory_builds_a_real_runner():
     assert isinstance(runner_obj, Runner)
 
 
+def test_retrace_coalesces_consecutive_same_axis_moves():
+    import runner_real  # noqa: E402
+    demo = runner_real._load_demo()
+    ml = demo.MotionLog(demo._FakeServer(), log=lambda *_: None)
+    # Many small same-direction centering yaws + two forward steps.
+    ml.turn_right(5); ml.turn_right(5); ml.turn_right(5)  # noqa: E702
+    ml.forward(20); ml.forward(20)  # noqa: E702
+    # reversed+inverse: back20,back20 -> back40 ; turnleft5 x3 -> turnleft15
+    assert ml.plan_retrace() == [("back", 40), ("turnleft", 15)]
+
+
+def test_retrace_nets_opposite_yaws():
+    import runner_real  # noqa: E402
+    demo = runner_real._load_demo()
+    ml = demo.MotionLog(demo._FakeServer(), log=lambda *_: None)
+    ml.turn_right(10); ml.turn_left(4)   # net CW 6  # noqa: E702
+    assert ml.plan_retrace() == [("turnleft", 6)]   # undo = CCW 6
+
+
 def test_opts_to_argv_maps_keys_to_flags():
     import runner_real  # noqa: E402
     argv = runner_real._opts_to_argv({"ip": "1.2.3.4", "tilt_deg": 50, "led_mode": "rainbow"})
