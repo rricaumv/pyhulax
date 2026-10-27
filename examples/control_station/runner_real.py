@@ -120,7 +120,8 @@ class MiniTankRunner(Runner):
                      "h": d.bbox.height, "label": d.label, "conf": d.confidence}
                     for d in (frame.detections or [])]
             image = frame.image
-            # Burn in the laser crosshair (the UI has no laser-specific overlay).
+            # Burn in the laser crosshair + a "TARGET DETECTED" banner (the UI has
+            # no laser-specific overlay).
             try:
                 import cv2
                 h, w = image.shape[:2]
@@ -129,6 +130,11 @@ class MiniTankRunner(Runner):
                 image = image.copy()
                 cv2.drawMarker(image, (w // 2, ly), (0, 0, 255),
                                cv2.MARKER_TILTED_CROSS, 20, 2)
+                if tank is not None:
+                    txt = "TARGET DETECTED"
+                    (tw, _), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                    cv2.putText(image, txt, ((w - tw) // 2, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             except Exception:  # noqa: BLE001
                 image = frame.image
             hooks.emit_frame(image, dets)
